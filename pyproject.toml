@@ -1,0 +1,35 @@
+[project]
+name = "comictranslate"
+version = "0.1.0"
+description = "Local end-to-end comic image translation for Apple Silicon"
+readme = "README.md"
+requires-python = "==3.10.18"
+dependencies = [
+    "loguru==0.7.3",
+    "mlx-vlm==0.6.15; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "numpy==2.2.6",
+    "opencv-python==5.0.0.93",
+    "pillow==12.3.0",
+    "torch==2.13.0",
+    "torchvision==0.28.0",
+    "transformers==5.15.1",
+]
+
+[project.scripts]
+comictranslate = "comictranslate.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest==9.0.2",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+markers = [
+    "integration: requires local model files and performs real inference",
+]
