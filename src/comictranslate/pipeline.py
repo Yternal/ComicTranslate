@@ -13,12 +13,21 @@ from loguru import logger
 
 from .config import PipelineConfig
 from .detection import RTDetrDetector
-from .errors import TranslationError
+from .errors import ComicTranslateError, ConfigurationError, TranslationError
 from .geometry import build_regions
 from .inpainting import LamaInpainter
-from .io_utils import atomic_save, load_image, original_alpha, restore_alpha, validate_io_paths
+from .io_utils import (
+    atomic_save,
+    default_output_directory,
+    directory_output_path,
+    discover_images,
+    load_image,
+    original_alpha,
+    restore_alpha,
+    validate_io_paths,
+)
 from .masking import ComicTextMasker, stitch_masks
-from .models import PipelineResult, Region, Translation
+from .models import BatchFailure, BatchResult, PipelineResult, Region, Translation
 from .qwen import QwenServiceManager, QwenTranslator
 from .rendering import ChineseTextRenderer
 from .validation import ensure_apple_metal, validate_models_and_font
@@ -45,6 +54,16 @@ class Pipeline:
         self.inpainter = inpainter
         self.renderer = renderer
         self.environment_check = environment_check
+        self._font_path: Path | None = None
+        self._prepared = False
+
+    def prepare(self) -> None:
+        if self._prepared:
+            return
+        font_path = validate_models_and_font(self.config)
+        self.environment_check()
+        self._font_path = font_path
+        self._prepared = True
 
     @contextmanager
     def _stage(self, number: int, name: str) -> Iterator[None]:
@@ -72,29 +91,31 @@ class Pipeline:
                 perf_counter() - started_at,
             )
 
-    def _debug_json(self, name: str, payload: object) -> None:
-        if self.config.debug_dir is None:
+    def _debug_json(self, debug_dir: Path | None, name: str, payload: object) -> None:
+        if debug_dir is None:
             return
-        self.config.debug_dir.mkdir(parents=True, exist_ok=True)
-        (self.config.debug_dir / name).write_text(
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        (debug_dir / name).write_text(
             json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
         )
 
-    def _prepare_debug_dir(self) -> None:
-        if self.config.debug_dir is None:
+    def _prepare_debug_dir(self, debug_dir: Path | None) -> None:
+        if debug_dir is None:
             return
-        self.config.debug_dir.mkdir(parents=True, exist_ok=True)
+        debug_dir.mkdir(parents=True, exist_ok=True)
         for name in ("detections.json", "translations.json", "mask.png", "clean.png"):
-            (self.config.debug_dir / name).unlink(missing_ok=True)
-        roi_dir = self.config.debug_dir / "roi"
+            (debug_dir / name).unlink(missing_ok=True)
+        roi_dir = debug_dir / "roi"
         roi_dir.mkdir(parents=True, exist_ok=True)
         for stale_roi in roi_dir.glob("region-*.png"):
             stale_roi.unlink()
 
-    def _debug_regions(self, image: Image.Image, regions: list[Region]) -> None:
-        if self.config.debug_dir is None:
+    def _debug_regions(
+        self, debug_dir: Path | None, image: Image.Image, regions: list[Region]
+    ) -> None:
+        if debug_dir is None:
             return
-        roi_dir = self.config.debug_dir / "roi"
+        roi_dir = debug_dir / "roi"
         roi_dir.mkdir(parents=True, exist_ok=True)
         for region in regions:
             image.crop(region.crop_bbox.as_int()).save(roi_dir / f"{region.id}.png")
@@ -127,13 +148,21 @@ class Pipeline:
                 f"翻译结果 ID 与检测区域不一致，expected={expected}, actual={actual}"
             )
 
-    def run(self, input_path: Path, output_path: Path) -> PipelineResult:
+    def run(
+        self,
+        input_path: Path,
+        output_path: Path,
+        *,
+        debug_name: str | None = None,
+    ) -> PipelineResult:
         logger.info("开始处理：{} -> {}", input_path, output_path)
+        debug_dir = self.config.debug_dir
+        if debug_dir is not None and debug_name is not None:
+            debug_dir = debug_dir / debug_name
         with self._stage(1, "校验输入、模型与运行环境"):
             input_path, output_path = validate_io_paths(input_path, output_path)
-            font_path = validate_models_and_font(self.config)
-            self.environment_check()
-            self._prepare_debug_dir()
+            self.prepare()
+            self._prepare_debug_dir(debug_dir)
 
         with self._stage(2, "读取输入图片"):
             original = load_image(input_path)
@@ -143,10 +172,11 @@ class Pipeline:
             logger.info("图片信息：{}x{}，alpha={}", width, height, alpha is not None)
 
         with self._stage(3, "检测气泡与文字区域"):
-            detector = self.detector or RTDetrDetector(
-                self.config.detector_model, self.config.detection_threshold
-            )
-            raw_detections = detector.detect(rgb)
+            if self.detector is None:
+                self.detector = RTDetrDetector(
+                    self.config.detector_model, self.config.detection_threshold
+                )
+            raw_detections = self.detector.detect(rgb)
             detections, regions = build_regions(
                 raw_detections,
                 width,
@@ -154,6 +184,7 @@ class Pipeline:
                 nms_iou_threshold=self.config.nms_iou_threshold,
             )
             self._debug_json(
+                debug_dir,
                 "detections.json",
                 {
                     "image_size": [width, height],
@@ -161,7 +192,7 @@ class Pipeline:
                     "regions": [item.to_dict() for item in regions],
                 },
             )
-            self._debug_regions(rgb, regions)
+            self._debug_regions(debug_dir, rgb, regions)
             logger.info(
                 "检测结果：原始 {} 个，去重后 {} 个，生成 {} 个文字区域",
                 len(raw_detections),
@@ -174,6 +205,7 @@ class Pipeline:
             self._validate_translation_set(regions, translations)
             regions_by_id = {region.id: region for region in regions}
             self._debug_json(
+                debug_dir,
                 "translations.json",
                 [
                     {
@@ -200,34 +232,37 @@ class Pipeline:
         with self._stage(5, "生成文字掩膜"):
             roi_masks: dict[str, np.ndarray] = {}
             if translated_regions:
-                masker = self.masker or ComicTextMasker(self.config.text_mask_model)
+                if self.masker is None:
+                    self.masker = ComicTextMasker(self.config.text_mask_model)
                 for region in translated_regions:
                     roi = rgb.crop(region.crop_bbox.as_int())
-                    roi_masks[region.id] = masker.mask(roi)
+                    roi_masks[region.id] = self.masker.mask(roi)
             global_mask = stitch_masks(rgb.size, translated_regions, roi_masks)
-            if self.config.debug_dir is not None:
-                self.config.debug_dir.mkdir(parents=True, exist_ok=True)
-                Image.fromarray(global_mask, mode="L").save(
-                    self.config.debug_dir / "mask.png"
-                )
+            if debug_dir is not None:
+                debug_dir.mkdir(parents=True, exist_ok=True)
+                Image.fromarray(global_mask, mode="L").save(debug_dir / "mask.png")
             logger.info("掩膜结果：处理 {} 个文字区域", len(roi_masks))
 
         with self._stage(6, "LaMa 擦除原文字"):
-            inpainter = self.inpainter or LamaInpainter(self.config.lama_model)
-            clean = inpainter.inpaint(rgb, global_mask)
+            if self.inpainter is None:
+                self.inpainter = LamaInpainter(self.config.lama_model)
+            clean = self.inpainter.inpaint(rgb, global_mask)
             if clean.size != rgb.size:
                 raise RuntimeError(f"LaMa 输出尺寸 {clean.size} 与输入 {rgb.size} 不一致")
-            if self.config.debug_dir is not None:
-                clean.save(self.config.debug_dir / "clean.png")
+            if debug_dir is not None:
+                clean.save(debug_dir / "clean.png")
 
         with self._stage(7, "排版并绘制中文译文"):
-            renderer = self.renderer or ChineseTextRenderer(
-                font_path,
-                minimum_size=self.config.minimum_font_size,
-                maximum_size=self.config.maximum_font_size,
-                text_placement=self.config.text_placement,
-            )
-            rendered = renderer.render(clean, regions, translations)
+            if self.renderer is None:
+                if self._font_path is None:
+                    raise RuntimeError("管线尚未完成初始化")
+                self.renderer = ChineseTextRenderer(
+                    self._font_path,
+                    minimum_size=self.config.minimum_font_size,
+                    maximum_size=self.config.maximum_font_size,
+                    text_placement=self.config.text_placement,
+                )
+            rendered = self.renderer.render(clean, regions, translations)
             output = restore_alpha(rendered, alpha)
             if output.size != original.size:
                 raise RuntimeError(f"输出尺寸 {output.size} 与输入 {original.size} 不一致")
@@ -254,3 +289,127 @@ def translate_image(
 ) -> PipelineResult:
     """Translate one comic image. The final file is written only after all stages succeed."""
     return Pipeline(config or PipelineConfig()).run(Path(input_path), Path(output_path))
+
+
+def translate_directory(
+    input_dir: str | Path,
+    output_dir: str | Path | None = None,
+    config: PipelineConfig | None = None,
+) -> BatchResult:
+    """Translate supported images directly inside one directory without recursion."""
+    batch_config = config or PipelineConfig()
+    resolved_input_dir = Path(input_dir).expanduser()
+    images = discover_images(resolved_input_dir)
+    resolved_input_dir = resolved_input_dir.resolve()
+    resolved_output_dir = Path(
+        output_dir
+        if output_dir is not None
+        else default_output_directory(resolved_input_dir)
+    ).expanduser().resolve(strict=False)
+    if resolved_output_dir.exists() and not resolved_output_dir.is_dir():
+        raise ConfigurationError(f"批量输出路径不是文件夹: {resolved_output_dir}")
+
+    jobs = tuple(
+        (
+            input_path.resolve(),
+            directory_output_path(input_path, resolved_output_dir),
+        )
+        for input_path in images
+    )
+    targets_by_name: dict[str, list[Path]] = {}
+    for input_path, output_path in jobs:
+        targets_by_name.setdefault(output_path.name.casefold(), []).append(input_path)
+    conflicts = [paths for paths in targets_by_name.values() if len(paths) > 1]
+    if conflicts:
+        details = "；".join(
+            f"{', '.join(path.name for path in paths)} -> "
+            f"{directory_output_path(paths[0], resolved_output_dir).name}"
+            for paths in conflicts
+        )
+        raise ConfigurationError(f"多个输入图片会写入同一输出文件: {details}")
+
+    skipped_inputs = tuple(
+        input_path for input_path, output_path in jobs if output_path.is_file()
+    )
+    pending_jobs = tuple(
+        (input_path, output_path)
+        for input_path, output_path in jobs
+        if not output_path.is_file()
+    )
+    for input_path in skipped_inputs:
+        logger.info("跳过已有输出：{}", input_path)
+    if not pending_jobs:
+        return BatchResult(
+            input_dir=resolved_input_dir,
+            output_dir=resolved_output_dir,
+            skipped_inputs=skipped_inputs,
+        )
+
+    try:
+        resolved_output_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise ConfigurationError(
+            f"无法创建批量输出文件夹 {resolved_output_dir}: {exc}"
+        ) from exc
+
+    translator = QwenTranslator(
+        batch_config.server_url,
+        batch_config.qwen_model,
+        batch_size=batch_config.translation_batch_size,
+    )
+    pipeline = Pipeline(batch_config, translator=translator)
+    pipeline.prepare()
+    results: list[PipelineResult] = []
+    failures: list[BatchFailure] = []
+    with QwenServiceManager(
+        batch_config.server_url,
+        batch_config.qwen_model,
+        start_timeout=batch_config.server_start_timeout,
+    ):
+        for index, (input_path, output_path) in enumerate(pending_jobs, start=1):
+            logger.info(
+                "批量进度 [{}/{}]：{}", index, len(pending_jobs), input_path.name
+            )
+            try:
+                results.append(
+                    pipeline.run(
+                        input_path,
+                        output_path,
+                        debug_name=input_path.name,
+                    )
+                )
+            except ComicTranslateError as exc:
+                logger.error("图片处理失败，继续批次：{}｜{}", input_path, exc)
+                failures.append(
+                    BatchFailure(
+                        input_path=input_path,
+                        output_path=output_path,
+                        error_type=type(exc).__name__,
+                        message=str(exc),
+                    )
+                )
+            except Exception as exc:
+                logger.exception("图片处理失败，继续批次：{}", input_path)
+                failures.append(
+                    BatchFailure(
+                        input_path=input_path,
+                        output_path=output_path,
+                        error_type=type(exc).__name__,
+                        message=str(exc),
+                    )
+                )
+
+    result = BatchResult(
+        input_dir=resolved_input_dir,
+        output_dir=resolved_output_dir,
+        results=tuple(results),
+        skipped_inputs=skipped_inputs,
+        failures=tuple(failures),
+    )
+    logger.info(
+        "批量处理完成：成功 {}，跳过 {}，失败 {}",
+        result.succeeded,
+        result.skipped,
+        result.failed,
+    )
+    return result

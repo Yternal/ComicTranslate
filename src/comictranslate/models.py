@@ -109,3 +109,57 @@ class PipelineResult:
             "output_path": str(self.output_path),
             "region_ids": list(self.region_ids),
         }
+
+
+@dataclass(frozen=True, slots=True)
+class BatchFailure:
+    input_path: Path
+    output_path: Path
+    error_type: str
+    message: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "input_path": str(self.input_path),
+            "output_path": str(self.output_path),
+            "error_type": self.error_type,
+            "message": self.message,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class BatchResult:
+    input_dir: Path
+    output_dir: Path
+    results: tuple[PipelineResult, ...] = field(default_factory=tuple)
+    skipped_inputs: tuple[Path, ...] = field(default_factory=tuple)
+    failures: tuple[BatchFailure, ...] = field(default_factory=tuple)
+
+    @property
+    def total(self) -> int:
+        return self.succeeded + self.skipped + self.failed
+
+    @property
+    def succeeded(self) -> int:
+        return len(self.results)
+
+    @property
+    def skipped(self) -> int:
+        return len(self.skipped_inputs)
+
+    @property
+    def failed(self) -> int:
+        return len(self.failures)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "input_dir": str(self.input_dir),
+            "output_dir": str(self.output_dir),
+            "total": self.total,
+            "succeeded": self.succeeded,
+            "skipped": self.skipped,
+            "failed": self.failed,
+            "results": [result.to_dict() for result in self.results],
+            "skipped_inputs": [str(path) for path in self.skipped_inputs],
+            "failures": [failure.to_dict() for failure in self.failures],
+        }

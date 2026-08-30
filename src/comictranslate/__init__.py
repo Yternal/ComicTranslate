@@ -1,5 +1,12 @@
 from .config import PipelineConfig
-from .models import PipelineResult
-from .pipeline import translate_image
+from .models import BatchFailure, BatchResult, PipelineResult
+from .pipeline import translate_directory, translate_image
 
-__all__ = ["PipelineConfig", "PipelineResult", "translate_image"]
+__all__ = [
+    "BatchFailure",
+    "BatchResult",
+    "PipelineConfig",
+    "PipelineResult",
+    "translate_directory",
+    "translate_image",
+]

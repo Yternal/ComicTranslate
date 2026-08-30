@@ -17,6 +17,33 @@ def default_output_path(input_path: Path) -> Path:
     return input_path.with_name(f"{input_path.stem}.translated.png")
 
 
+def default_output_directory(input_dir: Path) -> Path:
+    return Path(input_dir) / "translated"
+
+
+def discover_images(input_dir: Path) -> tuple[Path, ...]:
+    input_dir = Path(input_dir).expanduser()
+    if not input_dir.is_dir():
+        raise ConfigurationError(f"输入文件夹不存在: {input_dir}")
+    images = tuple(
+        sorted(
+            (
+                path
+                for path in input_dir.iterdir()
+                if path.is_file() and path.suffix.lower() in SUPPORTED_SUFFIXES
+            ),
+            key=lambda path: (path.name.casefold(), path.name),
+        )
+    )
+    if not images:
+        raise ConfigurationError(f"输入文件夹中没有支持的图片: {input_dir}")
+    return images
+
+
+def directory_output_path(input_path: Path, output_dir: Path) -> Path:
+    return Path(output_dir) / default_output_path(input_path).name
+
+
 def validate_io_paths(input_path: Path, output_path: Path) -> tuple[Path, Path]:
     input_path = Path(input_path).expanduser()
     output_path = Path(output_path).expanduser()

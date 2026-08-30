@@ -8,6 +8,7 @@ import pytest
 from loguru import logger
 from PIL import Image, ImageDraw
 
+import comictranslate.pipeline as pipeline_module
 from comictranslate.errors import ConfigurationError, TextLayoutError
 from comictranslate.io_utils import default_output_path
 from comictranslate.models import BBox, Detection, Translation
@@ -228,3 +229,69 @@ def test_default_output_and_input_overwrite_guard(tmp_path: Path, local_config) 
     assert default_output_path(input_path).name == "page.translated.png"
     with pytest.raises(ConfigurationError, match="禁止覆盖"):
         Pipeline(local_config, environment_check=lambda: None).run(input_path, input_path)
+
+
+def test_pipeline_reuses_stage_dependencies_and_isolates_batch_debug(
+    tmp_path: Path,
+    local_config,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:  # type: ignore[no-untyped-def]
+    config = type(local_config)(
+        detector_model=local_config.detector_model,
+        qwen_model=local_config.qwen_model,
+        text_mask_model=local_config.text_mask_model,
+        lama_model=local_config.lama_model,
+        font_path=local_config.font_path,
+        debug_dir=tmp_path / "debug",
+    )
+    constructor_calls: dict[str, int] = {
+        "detector": 0,
+        "masker": 0,
+        "inpainter": 0,
+        "renderer": 0,
+    }
+
+    def make_detector(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        constructor_calls["detector"] += 1
+        return FakeDetector()
+
+    def make_masker(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        constructor_calls["masker"] += 1
+        return FakeMasker()
+
+    def make_inpainter(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        constructor_calls["inpainter"] += 1
+        return FakeInpainter()
+
+    def make_renderer(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        constructor_calls["renderer"] += 1
+        return FakeRenderer()
+
+    monkeypatch.setattr(pipeline_module, "RTDetrDetector", make_detector)
+    monkeypatch.setattr(pipeline_module, "ComicTextMasker", make_masker)
+    monkeypatch.setattr(pipeline_module, "LamaInpainter", make_inpainter)
+    monkeypatch.setattr(pipeline_module, "ChineseTextRenderer", make_renderer)
+    pipeline = Pipeline(
+        config,
+        translator=FakeTranslator(),
+        environment_check=lambda: None,
+    )
+
+    for name in ("page-a.png", "page-b.webp"):
+        input_path = tmp_path / name
+        output_path = tmp_path / f"{Path(name).stem}.translated.png"
+        Image.new("RGB", (80, 60), "white").save(input_path)
+        pipeline.run(input_path, output_path, debug_name=name)
+
+    assert constructor_calls == {
+        "detector": 1,
+        "masker": 1,
+        "inpainter": 1,
+        "renderer": 1,
+    }
+    for name in ("page-a.png", "page-b.webp"):
+        debug_dir = config.debug_dir / name
+        assert (debug_dir / "detections.json").is_file()
+        assert (debug_dir / "translations.json").is_file()
+        assert (debug_dir / "mask.png").is_file()
+        assert (debug_dir / "clean.png").is_file()

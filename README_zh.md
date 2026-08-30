@@ -2,10 +2,10 @@
 
 [English](README.md) | [简体中文](README_zh.md)
 
-ComicTranslate 是一款面向 Apple Silicon macOS 的本地单图片漫画翻译工具。它将文字检测、OCR、简体中文翻译、原文擦除和译文排版串联成一条完整流水线，并尽可能保留输入图片的尺寸与透明通道。
+ComicTranslate 是一款面向 Apple Silicon macOS 的本地漫画翻译工具。它将文字检测、OCR、简体中文翻译、原文擦除和译文排版串联成一条完整流水线，并尽可能保留输入图片的尺寸与透明通道。输入既可以是单张图片，也可以是一个文件夹第一层中的所有受支持图片。
 
 > [!IMPORTANT]
-> 当前版本处于早期开发阶段，仅支持 Apple Silicon macOS、Python 3.10.18 和单张图片处理。所有模型都必须提前下载到本地，程序不会自动下载模型。
+> 当前版本处于早期开发阶段，仅支持 Apple Silicon macOS 和 Python 3.10.18。所有模型都必须提前下载到本地，程序不会自动下载模型。
 
 ## 目录
 
@@ -34,6 +34,7 @@ ComicTranslate 是一款面向 Apple Silicon macOS 的本地单图片漫画翻�
 - 根据区域宽高比自动选择横排或竖排，并自动调整字号。
 - 支持将译文放入气泡安全区，或回填到原文字检测框。
 - 支持 PNG、JPEG 和 WebP，保持原始像素尺寸；PNG/WebP 的 alpha 通道会被保留。
+- 支持批量翻译文件夹第一层中的图片，不递归处理子文件夹。
 - 采用原子写入：关键阶段失败时不会写入不完整的新结果文件。
 - 可导出检测、OCR、翻译、掩膜和修复图等调试产物。
 
@@ -92,6 +93,18 @@ uv run comictranslate page.png \
 
 未指定 `--output` 时，结果写入输入图片旁的 `<原文件名>.translated.png`。例如，`page.jpg` 对应 `page.translated.png`。
 
+翻译文件夹时，将文件夹作为 `INPUT`：
+
+```bash
+uv run comictranslate ./pages \
+  --detector-model /absolute/path/to/comic-text-and-bubble-detector \
+  --qwen-model /absolute/path/to/qwen-mlx-model \
+  --text-mask-model /absolute/path/to/comictextdetector.pt.onnx \
+  --lama-model /absolute/path/to/big-lama.pt
+```
+
+文件夹模式只扫描第一层，默认将结果写入 `./pages/translated/`。已有结果会直接跳过，因此中断后可以再次运行以继续处理。
+
 ## 模型配置
 
 | 阶段 | 使用的模型 | 下载地址 | CLI 参数与路径类型 |
@@ -146,9 +159,9 @@ comictranslate INPUT
 
 | 参数 | 说明 |
 | --- | --- |
-| `INPUT` | 必填，待翻译的单张漫画图片。 |
-| `-o, --output` | 输出路径；默认生成 `<文件名>.translated.png`。 |
-| `--debug-dir` | 保存中间结果的目录。 |
+| `INPUT` | 必填，待翻译的单张漫画图片或图片文件夹。 |
+| `-o, --output` | 单图模式下是输出文件（默认同目录 `<stem>.translated.png`）；文件夹模式下是输出目录（默认 `INPUT/translated/`）。 |
+| `--debug-dir` | 保存中间结果的目录；文件夹模式会为每个源文件创建独立子目录。 |
 | `--detector-model` | RT-DETR 模型目录的绝对路径。 |
 | `--qwen-model` | Qwen MLX 模型目录的绝对路径。 |
 | `--text-mask-model` | comic-text-detector ONNX 文件的绝对路径。 |
@@ -184,14 +197,48 @@ uv run comictranslate ./examples/page.webp \
 }
 ```
 
-禁止将输出路径设置为输入图片本身。输出目录不存在时会自动创建。
+文件夹输入只处理第一层的 PNG、JPEG 和 WebP 文件，并按文件名排序。每个结果命名为 `<stem>.translated.png`，默认输出目录为 `INPUT/translated/`；不支持的文件和子文件夹会被忽略，已有结果会跳过。若两个输入文件具有相同 stem、会映射到同一个输出文件，命令会在处理前报错。
+
+文件夹批次会在所有图片尝试完成后输出一次 JSON 汇总：
+
+```json
+{
+  "input_dir": "/absolute/path/pages",
+  "output_dir": "/absolute/path/pages/translated",
+  "total": 3,
+  "succeeded": 1,
+  "skipped": 1,
+  "failed": 1,
+  "results": [
+    {
+      "width": 1057,
+      "height": 1500,
+      "translated_regions": 8,
+      "skipped_regions": 1,
+      "output_path": "/absolute/path/pages/translated/001.translated.png",
+      "region_ids": ["region-0001"]
+    }
+  ],
+  "skipped_inputs": ["/absolute/path/pages/002.jpg"],
+  "failures": [
+    {
+      "input_path": "/absolute/path/pages/003.webp",
+      "output_path": "/absolute/path/pages/translated/003.translated.png",
+      "error_type": "TranslationError",
+      "message": "..."
+    }
+  ]
+}
+```
+
+单张图片失败后，批次会继续处理其余图片；只要存在失败项，命令退出码就是 `1`。单图模式禁止将输出路径设置为输入图片本身。输出目录不存在时会自动创建。
 
 ## Python API
 
 ```python
 from pathlib import Path
 
-from comictranslate import PipelineConfig, translate_image
+from comictranslate import PipelineConfig, translate_directory, translate_image
 
 config = PipelineConfig(
     detector_model=Path("/models/comic-text-and-bubble-detector"),
@@ -204,9 +251,12 @@ config = PipelineConfig(
 
 result = translate_image("page.webp", "page.translated.png", config)
 print(result.to_dict())
+
+batch = translate_directory("pages", config=config)
+print(batch.succeeded, batch.skipped, batch.failed)
 ```
 
-`translate_image` 一次处理一张图片，并返回 `PipelineResult`。公开 API 从 `comictranslate` 包根导出。
+`translate_image` 一次处理一张图片并返回 `PipelineResult`。`translate_directory` 返回 `BatchResult`，其中包含成功的 `PipelineResult`、跳过的输入路径和 `BatchFailure` 失败记录。所有公开类型和函数均从 `comictranslate` 包根导出。
 
 ## 调试输出
 
@@ -223,6 +273,8 @@ DIR/
 ```
 
 每次运行会清理同一调试目录中的上述旧产物和 `roi/region-*.png`，请勿将需要保留的文件放在这些位置。
+
+文件夹模式会为每个源文件建立类似 `DIR/page.jpg/` 的隔离目录，内部结构与上面相同，因此一张图片的调试清理不会影响其他图片。
 
 ## 项目结构
 
@@ -276,7 +328,7 @@ uv build
 
 ## 已知限制
 
-- 仅处理单张图片，不提供目录批处理、PDF/EPUB 或图形界面。
+- 文件夹批处理只扫描第一层，不支持递归子文件夹、PDF/EPUB 或图形界面。
 - 目标语言固定为简体中文。
 - 运行环境固定为 Apple Silicon macOS 和 Python 3.10.18。
 - 模型不会自动下载，且默认模型路径具有开发机特定性。

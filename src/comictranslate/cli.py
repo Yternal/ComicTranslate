@@ -17,7 +17,7 @@ from .config import (
 )
 from .errors import ComicTranslateError
 from .io_utils import default_output_path
-from .pipeline import translate_image
+from .pipeline import translate_directory, translate_image
 
 
 def absolute_path(value: str) -> Path:
@@ -29,11 +29,15 @@ def absolute_path(value: str) -> Path:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="comictranslate", description="将单张漫画图片中的外文翻译并回填为简体中文"
+        prog="comictranslate", description="将漫画图片中的外文翻译并回填为简体中文"
     )
-    parser.add_argument("input", type=Path, metavar="INPUT")
-    parser.add_argument("-o", "--output", type=Path)
-    parser.add_argument("--debug-dir", type=Path)
+    parser.add_argument(
+        "input", type=Path, metavar="INPUT", help="单张漫画图片或图片文件夹"
+    )
+    parser.add_argument(
+        "-o", "--output", type=Path, help="单图输出文件或批量输出文件夹"
+    )
+    parser.add_argument("--debug-dir", type=Path, help="保存中间调试产物的目录")
     parser.add_argument(
         "--detector-model",
         type=absolute_path,
@@ -72,7 +76,6 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        output = args.output or default_output_path(args.input)
         config = PipelineConfig(
             detector_model=args.detector_model,
             qwen_model=args.qwen_model,
@@ -83,7 +86,13 @@ def main(argv: list[str] | None = None) -> int:
             debug_dir=args.debug_dir,
             text_placement=args.text_placement,
         )
-        result = translate_image(args.input, output, config)
+        if args.input.expanduser().is_dir():
+            result = translate_directory(args.input, args.output, config)
+            exit_code = 1 if result.failed else 0
+        else:
+            output = args.output or default_output_path(args.input)
+            result = translate_image(args.input, output, config)
+            exit_code = 0
     except (ComicTranslateError, ValueError) as exc:
         logger.error("处理失败：{}", exc)
         return 1
@@ -94,7 +103,7 @@ def main(argv: list[str] | None = None) -> int:
         logger.warning("已取消")
         return 130
     print(json.dumps(result.to_dict(), ensure_ascii=False))
-    return 0
+    return exit_code
 
 
 if __name__ == "__main__":

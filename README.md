@@ -2,10 +2,10 @@
 
 [English](README.md) | [简体中文](README_zh.md)
 
-ComicTranslate is a local, single-image comic translation tool for Apple Silicon Macs. It combines text detection, OCR, Simplified Chinese translation, source-text removal, and translated-text rendering in one pipeline while preserving the input dimensions and transparency whenever possible.
+ComicTranslate is a local comic translation tool for Apple Silicon Macs. It combines text detection, OCR, Simplified Chinese translation, source-text removal, and translated-text rendering in one pipeline while preserving the input dimensions and transparency whenever possible. It accepts either one image or all supported images directly inside a folder.
 
 > [!IMPORTANT]
-> This project is in an early stage. The current version supports only Apple Silicon macOS, Python 3.10.18, and one image at a time. All models must be downloaded in advance; ComicTranslate never downloads models automatically.
+> This project is in an early stage. The current version supports only Apple Silicon macOS and Python 3.10.18. All models must be downloaded in advance; ComicTranslate never downloads models automatically.
 
 ## Table of contents
 
@@ -34,6 +34,7 @@ ComicTranslate is a local, single-image comic translation tool for Apple Silicon
 - Selects horizontal or vertical layout from the target region and adjusts the font size automatically.
 - Places translated text in a conservative speech-bubble safe area or in the original detected text box.
 - Reads and writes PNG, JPEG, and WebP; preserves the original pixel dimensions and PNG/WebP alpha channel.
+- Translates the supported images directly inside a folder without descending into subfolders.
 - Saves atomically so a failed critical stage does not produce a partial new result file.
 - Exports optional detection, OCR, translation, mask, and inpainting artifacts for debugging.
 
@@ -92,6 +93,18 @@ uv run comictranslate page.png \
 
 Without `--output`, the result is created next to the input as `<original-name>.translated.png`. For example, `page.jpg` produces `page.translated.png`.
 
+To translate a folder, pass the folder as `INPUT`:
+
+```bash
+uv run comictranslate ./pages \
+  --detector-model /absolute/path/to/comic-text-and-bubble-detector \
+  --qwen-model /absolute/path/to/qwen-mlx-model \
+  --text-mask-model /absolute/path/to/comictextdetector.pt.onnx \
+  --lama-model /absolute/path/to/big-lama.pt
+```
+
+The folder mode scans only the first level and writes results to `./pages/translated/` by default. Existing result files are skipped so an interrupted batch can be resumed.
+
 ## Model configuration
 
 | Stage | Model in use | Download | CLI argument and path type |
@@ -146,9 +159,9 @@ comictranslate INPUT
 
 | Argument | Description |
 | --- | --- |
-| `INPUT` | Required path to one comic image. |
-| `-o, --output` | Output path; defaults to `<name>.translated.png`. |
-| `--debug-dir` | Directory for intermediate artifacts. |
+| `INPUT` | Required path to one comic image or a folder of images. |
+| `-o, --output` | Output file for one image (default: sibling `<stem>.translated.png`), or output directory for folder mode (default: `INPUT/translated/`). |
+| `--debug-dir` | Directory for intermediate artifacts; folder mode creates one subdirectory per source file. |
 | `--detector-model` | Absolute path to the RT-DETR model directory. |
 | `--qwen-model` | Absolute path to the Qwen MLX model directory. |
 | `--text-mask-model` | Absolute path to the comic-text-detector ONNX file. |
@@ -184,14 +197,48 @@ On success, the command writes a JSON summary to standard output:
 }
 ```
 
-The output path must not point to the input image. Missing output directories are created automatically.
+For folder input, only first-level PNG, JPEG, and WebP files are processed, in filename order. Each result is named `<stem>.translated.png`; the default output directory is `INPUT/translated/`. Unsupported files and subdirectories are ignored. Existing results are skipped. If two inputs have the same stem and would map to one result, the command fails before processing anything.
+
+A folder batch writes one JSON summary after all images have been attempted:
+
+```json
+{
+  "input_dir": "/absolute/path/pages",
+  "output_dir": "/absolute/path/pages/translated",
+  "total": 3,
+  "succeeded": 1,
+  "skipped": 1,
+  "failed": 1,
+  "results": [
+    {
+      "width": 1057,
+      "height": 1500,
+      "translated_regions": 8,
+      "skipped_regions": 1,
+      "output_path": "/absolute/path/pages/translated/001.translated.png",
+      "region_ids": ["region-0001"]
+    }
+  ],
+  "skipped_inputs": ["/absolute/path/pages/002.jpg"],
+  "failures": [
+    {
+      "input_path": "/absolute/path/pages/003.webp",
+      "output_path": "/absolute/path/pages/translated/003.translated.png",
+      "error_type": "TranslationError",
+      "message": "..."
+    }
+  ]
+}
+```
+
+The batch continues after an individual image fails and returns exit code `1` if any failures were recorded. The output path for one image must not point to the input itself. Missing output directories are created automatically.
 
 ## Python API
 
 ```python
 from pathlib import Path
 
-from comictranslate import PipelineConfig, translate_image
+from comictranslate import PipelineConfig, translate_directory, translate_image
 
 config = PipelineConfig(
     detector_model=Path("/models/comic-text-and-bubble-detector"),
@@ -204,9 +251,12 @@ config = PipelineConfig(
 
 result = translate_image("page.webp", "page.translated.png", config)
 print(result.to_dict())
+
+batch = translate_directory("pages", config=config)
+print(batch.succeeded, batch.skipped, batch.failed)
 ```
 
-`translate_image` processes one image and returns a `PipelineResult`. The public API is exported from the `comictranslate` package root.
+`translate_image` processes one image and returns a `PipelineResult`. `translate_directory` returns a `BatchResult` containing successful `PipelineResult` objects, skipped input paths, and `BatchFailure` records. All public API types and functions are exported from the `comictranslate` package root.
 
 ## Debug output
 
@@ -223,6 +273,8 @@ DIR/
 ```
 
 Each run removes old copies of these artifacts and `roi/region-*.png` from the same debug directory. Do not store files you need to keep at those locations.
+
+In folder mode, each source gets an isolated directory such as `DIR/page.jpg/` with the same layout. Debug data from one image therefore cannot clear another image's artifacts.
 
 ## Project structure
 
@@ -276,7 +328,7 @@ Real-model integration tests are skipped by default. A unit-test-only run must n
 
 ## Known limitations
 
-- Processes one image at a time; there is no directory batch mode, PDF/EPUB support, or GUI.
+- Folder batches scan one level only; recursive folders, PDF/EPUB input, and a GUI are not supported.
 - The target language is fixed to Simplified Chinese.
 - The runtime is restricted to Apple Silicon macOS and Python 3.10.18.
 - Models are never downloaded automatically, and the built-in model paths are development-machine specific.
