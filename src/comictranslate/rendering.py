@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import platform
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -11,11 +13,12 @@ from .errors import ConfigurationError
 from .models import BBox, Region, Translation
 
 
-DEFAULT_FONT_CANDIDATES = (
+MACOS_FONT_CANDIDATES = (
     Path("/System/Library/Fonts/STHeiti Medium.ttc"),
     Path("/System/Library/Fonts/STHeiti Light.ttc"),
     Path("/System/Library/Fonts/Supplemental/Arial Unicode.ttf"),
 )
+WINDOWS_FONT_FILENAMES = ("msyh.ttc", "simhei.ttf", "simsun.ttc")
 
 # An axis-aligned rectangle needs roughly 14.65% inset on every side to fit
 # inside an ellipse. Use 18% to leave room for irregular borders, tails,
@@ -30,10 +33,19 @@ def resolve_font_path(font_path: Path | None = None) -> Path:
         if candidate.is_file():
             return candidate
         raise ConfigurationError(f"字体文件不存在: {candidate}")
-    for candidate in DEFAULT_FONT_CANDIDATES:
+    if platform.system() == "Windows":
+        windir = os.environ.get("WINDIR")
+        candidates = (
+            tuple(Path(windir, "Fonts", name) for name in WINDOWS_FONT_FILENAMES)
+            if windir
+            else ()
+        )
+    else:
+        candidates = MACOS_FONT_CANDIDATES
+    for candidate in candidates:
         if candidate.is_file():
             return candidate
-    raise ConfigurationError("找不到可用的系统黑体，请使用 --font 指定字体")
+    raise ConfigurationError("找不到可用的中文系统字体，请使用 --font 指定字体")
 
 
 @dataclass(frozen=True, slots=True)

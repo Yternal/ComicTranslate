@@ -1,6 +1,10 @@
+from pathlib import Path
+
 import numpy as np
+import pytest
 from PIL import Image, ImageDraw, ImageFont
 
+import comictranslate.rendering as rendering_module
 from comictranslate.models import BBox, Region, Translation
 from comictranslate.rendering import (
     ChineseTextRenderer,
@@ -9,6 +13,21 @@ from comictranslate.rendering import (
     fit_text,
     resolve_font_path,
 )
+
+
+def test_windows_font_discovery_prefers_microsoft_yahei(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fonts = tmp_path / "Windows" / "Fonts"
+    fonts.mkdir(parents=True)
+    yahei = fonts / "msyh.ttc"
+    simhei = fonts / "simhei.ttf"
+    yahei.write_bytes(b"font")
+    simhei.write_bytes(b"font")
+    monkeypatch.setattr(rendering_module.platform, "system", lambda: "Windows")
+    monkeypatch.setenv("WINDIR", str(tmp_path / "Windows"))
+
+    assert resolve_font_path() == yahei
 
 
 def test_horizontal_and_vertical_layout_selection() -> None:

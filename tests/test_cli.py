@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from comictranslate.cli import build_parser
+from comictranslate.cli import absolute_path, build_parser
 from comictranslate.config import (
     DEFAULT_QWEN_MODEL,
     DEFAULT_TEXT_MASK_MODEL,
@@ -13,6 +13,23 @@ from comictranslate.config import (
 def test_cli_accepts_original_text_placement() -> None:
     args = build_parser().parse_args(["page.png", "--text-placement", "original"])
     assert args.text_placement == "original"
+
+
+def test_cli_accepts_device_and_external_qwen_options() -> None:
+    args = build_parser().parse_args(
+        [
+            "page.png",
+            "--device",
+            "cuda",
+            "--qwen-service-mode",
+            "external",
+            "--qwen-model-id",
+            "qwen-vl-local",
+        ]
+    )
+    assert args.device == "cuda"
+    assert args.qwen_service_mode == "external"
+    assert args.qwen_model_id == "qwen-vl-local"
 
 
 def test_pipeline_config_rejects_unknown_text_placement() -> None:
@@ -65,3 +82,9 @@ def test_cli_rejects_relative_independent_model_path() -> None:
 def test_pipeline_config_rejects_relative_independent_model_path() -> None:
     with pytest.raises(ValueError, match="detector_model 必须是绝对路径"):
         PipelineConfig(detector_model="models/detector")
+
+
+def test_windows_absolute_model_path_is_accepted_cross_platform() -> None:
+    value = r"C:\models\detector"
+    assert absolute_path(value) == Path(value)
+    assert PipelineConfig(detector_model=value).detector_model == Path(value)

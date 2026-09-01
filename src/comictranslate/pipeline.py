@@ -30,7 +30,13 @@ from .masking import ComicTextMasker, stitch_masks
 from .models import BatchFailure, BatchResult, PipelineResult, Region, Translation
 from .qwen import QwenServiceManager, QwenTranslator
 from .rendering import ChineseTextRenderer
-from .validation import ensure_apple_metal, validate_models_and_font
+from .validation import (
+    ResolvedQwenServiceMode,
+    ensure_supported_runtime,
+    resolve_device,
+    resolve_qwen_service_mode,
+    validate_models_and_font,
+)
 
 
 class Pipeline:
@@ -45,7 +51,8 @@ class Pipeline:
         masker: Any = None,
         inpainter: Any = None,
         renderer: Any = None,
-        environment_check: Callable[[], None] = ensure_apple_metal,
+        environment_check: Callable[[], None] = ensure_supported_runtime,
+        device_resolver: Callable[[str], str] = resolve_device,
     ) -> None:
         self.config = config
         self.detector = detector
@@ -54,16 +61,53 @@ class Pipeline:
         self.inpainter = inpainter
         self.renderer = renderer
         self.environment_check = environment_check
+        self.device_resolver = device_resolver
         self._font_path: Path | None = None
+        self._device: str | None = None
+        self._qwen_service_mode: ResolvedQwenServiceMode | None = None
         self._prepared = False
 
     def prepare(self) -> None:
         if self._prepared:
             return
-        font_path = validate_models_and_font(self.config)
         self.environment_check()
+        service_mode = resolve_qwen_service_mode(self.config.qwen_service_mode)
+        device = self.device_resolver(self.config.device)
+        font_path = validate_models_and_font(self.config, service_mode)
         self._font_path = font_path
+        self._device = device
+        self._qwen_service_mode = service_mode
         self._prepared = True
+
+    def _resolved_qwen_model(self) -> str | Path:
+        if self._qwen_service_mode == "external":
+            if self.config.qwen_model_id is None:
+                raise RuntimeError("管线尚未完成 Qwen 外部模型初始化")
+            return self.config.qwen_model_id
+        if self.config.qwen_model is None:
+            raise RuntimeError("管线尚未完成 Qwen MLX 模型初始化")
+        return self.config.qwen_model
+
+    def _service_manager(self) -> QwenServiceManager:
+        if self._qwen_service_mode is None:
+            raise RuntimeError("管线尚未完成 Qwen 服务模式初始化")
+        return QwenServiceManager(
+            self.config.server_url,
+            self.config.qwen_model,
+            mode=self._qwen_service_mode,
+            model_id=self.config.qwen_model_id,
+            start_timeout=self.config.server_start_timeout,
+        )
+
+    def _translator(self) -> QwenTranslator:
+        if self._qwen_service_mode is None:
+            raise RuntimeError("管线尚未完成 Qwen 服务模式初始化")
+        return QwenTranslator(
+            self.config.server_url,
+            self._resolved_qwen_model(),
+            service_mode=self._qwen_service_mode,
+            batch_size=self.config.translation_batch_size,
+        )
 
     @contextmanager
     def _stage(self, number: int, name: str) -> Iterator[None]:
@@ -125,16 +169,8 @@ class Pipeline:
             return []
         if self.translator is not None:
             return list(self.translator.translate(image, regions))
-        translator = QwenTranslator(
-            self.config.server_url,
-            self.config.qwen_model,
-            batch_size=self.config.translation_batch_size,
-        )
-        with QwenServiceManager(
-            self.config.server_url,
-            self.config.qwen_model,
-            start_timeout=self.config.server_start_timeout,
-        ):
+        translator = self._translator()
+        with self._service_manager():
             return translator.translate(image, regions)
 
     @staticmethod
@@ -173,8 +209,12 @@ class Pipeline:
 
         with self._stage(3, "检测气泡与文字区域"):
             if self.detector is None:
+                if self.config.detector_model is None or self._device is None:
+                    raise RuntimeError("管线尚未完成 RT-DETR 初始化")
                 self.detector = RTDetrDetector(
-                    self.config.detector_model, self.config.detection_threshold
+                    self.config.detector_model,
+                    self.config.detection_threshold,
+                    device=self._device,
                 )
             raw_detections = self.detector.detect(rgb)
             detections, regions = build_regions(
@@ -233,6 +273,8 @@ class Pipeline:
             roi_masks: dict[str, np.ndarray] = {}
             if translated_regions:
                 if self.masker is None:
+                    if self.config.text_mask_model is None:
+                        raise RuntimeError("管线尚未完成文字 mask 模型初始化")
                     self.masker = ComicTextMasker(self.config.text_mask_model)
                 for region in translated_regions:
                     roi = rgb.crop(region.crop_bbox.as_int())
@@ -245,7 +287,11 @@ class Pipeline:
 
         with self._stage(6, "LaMa 擦除原文字"):
             if self.inpainter is None:
-                self.inpainter = LamaInpainter(self.config.lama_model)
+                if self.config.lama_model is None or self._device is None:
+                    raise RuntimeError("管线尚未完成 LaMa 初始化")
+                self.inpainter = LamaInpainter(
+                    self.config.lama_model, device=self._device
+                )
             clean = self.inpainter.inpaint(rgb, global_mask)
             if clean.size != rgb.size:
                 raise RuntimeError(f"LaMa 输出尺寸 {clean.size} 与输入 {rgb.size} 不一致")
@@ -352,9 +398,18 @@ def translate_directory(
             f"无法创建批量输出文件夹 {resolved_output_dir}: {exc}"
         ) from exc
 
+    service_mode = resolve_qwen_service_mode(batch_config.qwen_service_mode)
+    qwen_model: str | Path | None = (
+        batch_config.qwen_model_id
+        if service_mode == "external"
+        else batch_config.qwen_model
+    )
+    if qwen_model is None:
+        qwen_model = ""
     translator = QwenTranslator(
         batch_config.server_url,
-        batch_config.qwen_model,
+        qwen_model,
+        service_mode=service_mode,
         batch_size=batch_config.translation_batch_size,
     )
     pipeline = Pipeline(batch_config, translator=translator)
@@ -364,6 +419,8 @@ def translate_directory(
     with QwenServiceManager(
         batch_config.server_url,
         batch_config.qwen_model,
+        mode=service_mode,
+        model_id=batch_config.qwen_model_id,
         start_timeout=batch_config.server_start_timeout,
     ):
         for index, (input_path, output_path) in enumerate(pending_jobs, start=1):

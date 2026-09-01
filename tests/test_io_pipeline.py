@@ -295,3 +295,35 @@ def test_pipeline_reuses_stage_dependencies_and_isolates_batch_debug(
         assert (debug_dir / "translations.json").is_file()
         assert (debug_dir / "mask.png").is_file()
         assert (debug_dir / "clean.png").is_file()
+
+
+def test_pipeline_passes_one_resolved_device_to_detector_and_lama(
+    tmp_path: Path,
+    local_config,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:  # type: ignore[no-untyped-def]
+    input_path = tmp_path / "source.png"
+    output_path = tmp_path / "translated.png"
+    Image.new("RGB", (80, 60), "white").save(input_path)
+    devices: dict[str, str] = {}
+
+    def make_detector(*_args, device, **_kwargs):  # type: ignore[no-untyped-def]
+        devices["detector"] = device
+        return FakeDetector()
+
+    def make_inpainter(*_args, device, **_kwargs):  # type: ignore[no-untyped-def]
+        devices["lama"] = device
+        return FakeInpainter()
+
+    monkeypatch.setattr(pipeline_module, "RTDetrDetector", make_detector)
+    monkeypatch.setattr(pipeline_module, "LamaInpainter", make_inpainter)
+    Pipeline(
+        local_config,
+        translator=FakeTranslator(),
+        masker=FakeMasker(),
+        renderer=FakeRenderer(),
+        environment_check=lambda: None,
+        device_resolver=lambda _requested: "cuda",
+    ).run(input_path, output_path)
+
+    assert devices == {"detector": "cuda", "lama": "cuda"}

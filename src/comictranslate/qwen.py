@@ -80,15 +80,19 @@ class QwenServiceManager:
     def __init__(
         self,
         server_url: str,
-        model_path: Path,
+        model_path: Path | None,
         *,
+        mode: Literal["managed-mlx", "external"] = "managed-mlx",
+        model_id: str | None = None,
         start_timeout: float = 180.0,
         python_executable: str | None = None,
         clock: Callable[[], float] = time.monotonic,
         sleeper: Callable[[float], None] = time.sleep,
     ) -> None:
         self.server_url = server_url.rstrip("/")
-        self.model_path = Path(model_path)
+        self.model_path = Path(model_path) if model_path is not None else None
+        self.mode = mode
+        self.model_id = model_id
         self.start_timeout = start_timeout
         self.python_executable = python_executable or sys.executable
         self._clock = clock
@@ -133,6 +137,33 @@ class QwenServiceManager:
             raise TranslationError(f"无效的 Qwen server URL: {self.server_url}")
         return parsed.hostname, parsed.port or (443 if parsed.scheme == "https" else 80)
 
+    def _external_model_ids(self) -> set[str]:
+        request = urllib.request.Request(
+            _api_url(self.server_url, "models"),
+            headers={"Accept": "application/json", "User-Agent": "comictranslate/0.1"},
+        )
+        try:
+            with _open(request, timeout=5.0) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as exc:
+            raise TranslationError(f"无法连接外部 Qwen 服务: {exc}") from exc
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise TranslationError(f"外部 Qwen 的 /v1/models 响应不是有效 JSON: {exc}") from exc
+        try:
+            records = payload["data"]
+            if not isinstance(records, list):
+                raise TypeError("data 不是数组")
+            model_ids = {
+                record["id"]
+                for record in records
+                if isinstance(record, dict) and isinstance(record.get("id"), str)
+            }
+        except (KeyError, TypeError) as exc:
+            raise TranslationError(
+                f"外部 Qwen 的 /v1/models 响应格式无效: {exc}"
+            ) from exc
+        return model_ids
+
     def _port_is_open(self) -> bool:
         host, port = self._address()
         try:
@@ -170,6 +201,20 @@ class QwenServiceManager:
 
     def ensure_ready(self) -> None:
         logger.info("检查 Qwen 服务：{}", self.server_url)
+        if self.mode == "external":
+            host, _ = self._address()
+            if host not in {"127.0.0.1", "localhost", "::1"}:
+                raise TranslationError("external Qwen 服务只允许本机回环地址")
+            if not self.model_id:
+                raise TranslationError("external Qwen 模式缺少模型 ID")
+            model_ids = self._external_model_ids()
+            if self.model_id not in model_ids:
+                available = ", ".join(sorted(model_ids)) or "无"
+                raise TranslationError(
+                    f"外部 Qwen 服务中找不到模型 {self.model_id}；可用模型: {available}"
+                )
+            logger.info("外部 Qwen 服务与模型已就绪：{}", self.model_id)
+            return
         state = self._probe()
         if state == "mlx":
             logger.info("复用已就绪的 Qwen 服务")
@@ -179,6 +224,8 @@ class QwenServiceManager:
             raise TranslationError(f"端口 {port} 已被非 mlx_vlm 服务占用")
 
         logger.info("Qwen 服务未运行，正在自动启动：{}", self.model_path)
+        if self.model_path is None:
+            raise TranslationError("managed-mlx 模式缺少本地 Qwen 模型目录")
         self._process = self._start_process()
         self._owned = True
         deadline = self._clock() + self.start_timeout
@@ -321,26 +368,30 @@ class QwenTranslator:
     def __init__(
         self,
         server_url: str,
-        model_path: Path,
+        model: str | Path,
         *,
+        service_mode: Literal["managed-mlx", "external"] = "managed-mlx",
         batch_size: int = 1,
         request_timeout: float = 600.0,
     ) -> None:
         self.server_url = server_url.rstrip("/")
-        self.model_path = Path(model_path)
+        self.model = str(model)
+        self.service_mode = service_mode
         self.batch_size = min(batch_size, 16)
         self.request_timeout = request_timeout
 
     def _post(self, payload: dict[str, Any]) -> str:
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "comictranslate/0.1",
+        }
+        if self.service_mode == "managed-mlx":
+            headers["Authorization"] = "Bearer not-needed"
         request = urllib.request.Request(
             _api_url(self.server_url, "chat/completions"),
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers={
-                "Authorization": "Bearer not-needed",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                "User-Agent": "comictranslate/0.1",
-            },
+            headers=headers,
             method="POST",
         )
         try:
@@ -388,11 +439,10 @@ class QwenTranslator:
             ]
         )
         payload = {
-            "model": str(self.model_path),
+            "model": self.model,
             "messages": [{"role": "user", "content": content}],
             "max_tokens": 4096,
             "temperature": 0.1,
-            "enable_thinking": False,
             "response_format": {
                 "type": "json_schema",
                 "json_schema": {
@@ -402,6 +452,8 @@ class QwenTranslator:
                 },
             },
         }
+        if self.service_mode == "managed-mlx":
+            payload["enable_thinking"] = False
         return self._post(payload)
 
     def translate(self, page_image: Image.Image, regions: Sequence[Region]) -> list[Translation]:

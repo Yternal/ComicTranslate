@@ -93,6 +93,25 @@ def test_request_places_target_roi_before_page_context() -> None:
 
     assert image_urls == ["roi-url", "page-url"]
     assert "禁止从整页中另选文字" in content[0]["text"]
+    assert translator.payload["enable_thinking"] is False
+
+
+def test_external_request_uses_model_id_without_mlx_fields() -> None:
+    class PayloadTranslator(QwenTranslator):
+        def _post(self, payload):  # type: ignore[no-untyped-def]
+            self.payload = payload
+            return _response(_item("a"))
+
+    translator = PayloadTranslator(
+        "http://127.0.0.1:8000/v1",
+        "qwen-local",
+        service_mode="external",
+    )
+    translator._request_regions("page-url", [_regions()[0]], {"a": "roi-url"})
+
+    assert translator.payload["model"] == "qwen-local"
+    assert "enable_thinking" not in translator.payload
+    assert translator.payload["response_format"]["type"] == "json_schema"
 
 
 def test_missing_id_is_retried_as_single_roi() -> None:

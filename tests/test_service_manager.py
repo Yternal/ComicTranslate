@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import io
+import json
 import subprocess
 
 import pytest
 
 from comictranslate.errors import TranslationError
 from comictranslate.qwen import QwenServiceManager
+import comictranslate.qwen as qwen_module
 
 
 class FakeProcess:
@@ -27,6 +30,20 @@ class FakeProcess:
 
     def wait(self, timeout=None):  # type: ignore[no-untyped-def]
         return self.returncode
+
+
+class FakeResponse:
+    def __init__(self, payload: dict[str, object]) -> None:
+        self._body = io.BytesIO(json.dumps(payload).encode("utf-8"))
+
+    def read(self) -> bytes:
+        return self._body.read()
+
+    def __enter__(self):  # type: ignore[no-untyped-def]
+        return self
+
+    def __exit__(self, *_args) -> None:  # type: ignore[no-untyped-def]
+        return None
 
 
 def test_reuses_existing_mlx_service_without_owning_it(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -90,3 +107,84 @@ def test_close_never_terminates_non_owned_process() -> None:
     manager._owned = False
     manager.close()
     assert not process.terminated
+
+
+def test_external_service_verifies_model_without_starting_process(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    manager = QwenServiceManager(
+        "http://localhost:8000/v1",
+        None,
+        mode="external",
+        model_id="qwen-local",
+    )
+    monkeypatch.setattr(manager, "_external_model_ids", lambda: {"qwen-local"})
+    monkeypatch.setattr(
+        manager,
+        "_start_process",
+        lambda: (_ for _ in ()).throw(AssertionError("不应启动进程")),
+    )
+    manager.ensure_ready()
+    manager.close()
+    assert not manager.owned
+
+
+def test_external_models_probe_reads_openai_models_shape(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    manager = QwenServiceManager(
+        "http://127.0.0.1:8000/v1",
+        None,
+        mode="external",
+        model_id="qwen-local",
+    )
+    seen_urls: list[str] = []
+
+    def fake_open(request, timeout):  # type: ignore[no-untyped-def]
+        seen_urls.append(request.full_url)
+        assert timeout == 5.0
+        return FakeResponse({"data": [{"id": "qwen-local"}, {"id": "other"}]})
+
+    monkeypatch.setattr(qwen_module, "_open", fake_open)
+    assert manager._external_model_ids() == {"qwen-local", "other"}
+    assert seen_urls == ["http://127.0.0.1:8000/v1/models"]
+
+
+def test_external_service_rejects_missing_model(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    manager = QwenServiceManager(
+        "http://127.0.0.1:8000/v1",
+        None,
+        mode="external",
+        model_id="missing",
+    )
+    monkeypatch.setattr(manager, "_external_model_ids", lambda: {"available"})
+    with pytest.raises(TranslationError, match="找不到模型 missing"):
+        manager.ensure_ready()
+
+
+def test_external_service_rejects_non_loopback_url(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    manager = QwenServiceManager(
+        "http://192.168.1.5:8000/v1",
+        None,
+        mode="external",
+        model_id="qwen-local",
+    )
+    monkeypatch.setattr(
+        manager,
+        "_external_model_ids",
+        lambda: (_ for _ in ()).throw(AssertionError("不应探测远程服务")),
+    )
+    with pytest.raises(TranslationError, match="只允许本机回环地址"):
+        manager.ensure_ready()
+
+
+def test_external_service_reports_connection_failure(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    manager = QwenServiceManager(
+        "http://[::1]:8000/v1",
+        None,
+        mode="external",
+        model_id="qwen-local",
+    )
+
+    def fail():  # type: ignore[no-untyped-def]
+        raise TranslationError("无法连接外部 Qwen 服务: refused")
+
+    monkeypatch.setattr(manager, "_external_model_ids", fail)
+    with pytest.raises(TranslationError, match="refused"):
+        manager.ensure_ready()

@@ -2,10 +2,10 @@
 
 [English](README.md) | [简体中文](README_zh.md)
 
-ComicTranslate 是一款面向 Apple Silicon macOS 的本地漫画翻译工具。它将文字检测、OCR、简体中文翻译、原文擦除和译文排版串联成一条完整流水线，并尽可能保留输入图片的尺寸与透明通道。输入既可以是单张图片，也可以是一个文件夹第一层中的所有受支持图片。
+ComicTranslate 是一款面向 Apple Silicon macOS，以及配备 NVIDIA GPU 的 Windows x64 的本地漫画翻译工具。它将文字检测、OCR、简体中文翻译、原文擦除和译文排版串联成一条完整流水线，并尽可能保留输入图片的尺寸与透明通道。输入既可以是单张图片，也可以是一个文件夹第一层中的所有受支持图片。
 
 > [!IMPORTANT]
-> 当前版本处于早期开发阶段，仅支持 Apple Silicon macOS 和 Python 3.10.18。所有模型都必须提前下载到本地，程序不会自动下载模型。
+> 当前版本处于早期开发阶段，支持 Apple Silicon macOS 与 Windows x64，并严格要求 Python 3.10.18。模型、字体和外部 Qwen 服务均不会由程序自动下载或安装。
 
 ## 目录
 
@@ -57,11 +57,11 @@ ComicTranslate 是一款面向 Apple Silicon macOS 的本地漫画翻译工具�
 
 | 项目 | 要求 |
 | --- | --- |
-| 操作系统 | Apple Silicon macOS（arm64） |
+| 操作系统 | Apple Silicon macOS（arm64）或 Windows x64（AMD64） |
 | Python | **3.10.18**，必须精确匹配 |
-| 计算后端 | Apple Metal / MPS |
+| 计算后端 | macOS：MPS；Windows：NVIDIA CUDA 12.6，`auto` 模式可回退 CPU |
 | 包管理器 | [uv](https://docs.astral.sh/uv/) |
-| 模型 | RT-DETR、Qwen MLX、comic-text-detector ONNX、LaMa |
+| 模型 | RT-DETR、comic-text-detector ONNX、LaMa，以及 macOS 上的 Qwen MLX 或 Windows 上的本机 OpenAI 兼容 VLM 服务 |
 | 输入格式 | `.png`、`.jpg`、`.jpeg`、`.webp` |
 | 输出格式 | `.png`、`.jpg`、`.jpeg`、`.webp` |
 
@@ -77,9 +77,17 @@ ComicTranslate 是一款面向 Apple Silicon macOS 的本地漫画翻译工具�
 uv sync --all-groups
 ```
 
-### 2. 准备模型
+Windows 会通过锁文件安装 PyTorch 官方 CUDA 12.6 wheel。请在 PowerShell 中验证：
 
-提前将四个模型下载到本地，并记录各自的绝对路径。模型不会由 ComicTranslate 自动下载。模型类型与参数的对应关系见[模型配置](#模型配置)。
+```powershell
+uv run python -c "import torch; print(torch.__version__); print(torch.cuda.is_available())"
+```
+
+受支持的 Windows 目标机上，第二行应为 `True`。需要安装与 wheel 内置 CUDA 12.6 运行时兼容的新版 NVIDIA 驱动。
+
+### 2. 准备模型与 Qwen
+
+提前下载 RT-DETR、comic-text-detector ONNX 与 LaMa，并记录绝对路径。macOS 还需下载 Qwen MLX 模型；Windows 则需先启动本机 OpenAI 兼容视觉语言模型服务，并记录它公布的模型 ID。具体契约见[模型配置](#模型配置)。
 
 ### 3. 翻译图片
 
@@ -89,6 +97,20 @@ uv run comictranslate page.png \
   --qwen-model /absolute/path/to/qwen-mlx-model \
   --text-mask-model /absolute/path/to/comictextdetector.pt.onnx \
   --lama-model /absolute/path/to/big-lama.pt
+```
+
+Windows PowerShell 示例：
+
+```powershell
+uv run comictranslate "C:\Comics\page.png" `
+  --output "C:\Comics\output\page.zh-CN.png" `
+  --detector-model "C:\Models\comic-detector" `
+  --text-mask-model "C:\Models\comictextdetector.pt.onnx" `
+  --lama-model "C:\Models\big-lama.pt" `
+  --device cuda `
+  --qwen-service-mode external `
+  --server-url http://127.0.0.1:8000/v1 `
+  --qwen-model-id qwen-vl-local
 ```
 
 未指定 `--output` 时，结果写入输入图片旁的 `<原文件名>.translated.png`。例如，`page.jpg` 对应 `page.translated.png`。
@@ -110,21 +132,11 @@ uv run comictranslate ./pages \
 | 阶段 | 使用的模型 | 下载地址 | CLI 参数与路径类型 |
 | --- | --- | --- | --- |
 | 气泡与文字检测 | `ogkalu/comic-text-and-bubble-detector` | [Hugging Face（固定版本 `16e8a62`）](https://huggingface.co/ogkalu/comic-text-and-bubble-detector/tree/16e8a622f91fabc6b5b65c96d32d1183f8843546) | `--detector-model`（模型目录） |
-| OCR 与翻译 | `mlx-community/Qwen3.5-9B-MLX-4bit` | [Hugging Face（固定版本 `938d891`）](https://huggingface.co/mlx-community/Qwen3.5-9B-MLX-4bit/tree/938d8919941c6e7efd3c7150eff7fe9d12afa631) | `--qwen-model`（MLX 模型目录） |
+| macOS OCR 与翻译 | `mlx-community/Qwen3.5-9B-MLX-4bit` | [Hugging Face（固定版本 `938d891`）](https://huggingface.co/mlx-community/Qwen3.5-9B-MLX-4bit/tree/938d8919941c6e7efd3c7150eff7fe9d12afa631) | `--qwen-model`（MLX 模型目录） |
 | 精细文字掩膜 | `comictextdetector.pt.onnx` | [GitHub Release 直接下载](https://github.com/zyddnys/manga-image-translator/releases/download/beta-0.3/comictextdetector.pt.onnx) | `--text-mask-model`（ONNX 文件） |
 | 图像修复 | `big-lama.pt`（TorchScript） | [Hugging Face 直接下载](https://huggingface.co/okaris/simple-lama/resolve/d5706085cdbdd5eb72503fdcd9fa648e952cfa53/big-lama.pt) | `--lama-model`（模型文件） |
 
-当前代码中的开发环境默认路径为：
-
-```text
-/Volumes/yrq/models/
-├── comic-text-and-bubble-detector/
-├── Qwen/Qwen3.5-9B-Official-MLX-4bit/
-├── manga-image-translator/comictextdetector.pt.onnx
-└── lama/big-lama.pt
-```
-
-这些默认值是开发环境中的绝对路径。除非本机目录完全一致，否则必须通过对应的 CLI 参数或 `PipelineConfig` 显式覆盖。四个模型路径必须是绝对路径；CLI 支持以 `~/` 开头并自动展开。
+项目不再内置模型路径。所有必需模型参数都必须使用绝对路径；macOS CLI 会展开 `~/`，Windows 支持 `C:\Models\big-lama.pt` 这样的盘符绝对路径。
 
 下载后可以将模型保存到任意位置，本地目录名无需与表中的仓库名一致。为确认单文件模型与当前验证版本一致，可校验 SHA-256：
 
@@ -133,14 +145,13 @@ comictextdetector.pt.onnx  1a86ace74961413cbd650002e7bb4dcec4980ffa21b2f19b86933
 big-lama.pt                7ba7aa7ac37a4d41fdbbeba3a2af7ead18058552997e3a3cd1a3b2210c9e6b4c
 ```
 
-默认情况下，程序会检查 `http://127.0.0.1:8080/v1`：
+Qwen 服务模式按平台确定默认值：
 
-- 如果健康的 `mlx_vlm` 服务已存在，则直接复用且不会在退出时关闭它。
-- 如果服务不存在，则使用当前 Python 环境启动 `mlx_vlm.server`，最多等待 180 秒，并仅在处理结束时关闭本次启动的进程。
-- 如果端口被其他服务占用，则明确报错。可通过 `--server-url` 更换地址或端口。
-- 远程 `mlx_vlm` 服务可以被复用，但程序不会自动启动远程服务。
+- Apple Silicon macOS 上，`auto` 等同 `managed-mlx`：复用健康的 `mlx_vlm`，或使用 `--qwen-model` 自动启动服务；退出时只关闭本次创建的进程。
+- Windows 上，`auto` 等同 `external`：仅接受 `localhost`、`127.0.0.1` 或 `::1`，通过 `GET /v1/models` 验证 `--qwen-model-id`。程序不会启动或终止外部服务。
+- 外部服务必须无鉴权实现 `POST /v1/chat/completions`、OpenAI 风格的 Data URL 图片输入和 `response_format.type=json_schema`。请求使用模型 ID，不包含 MLX 专有字段。
 
-字体未显式指定时，程序会依次尝试 macOS 自带的 STHeiti Medium、STHeiti Light 和 Arial Unicode。也可以使用 `--font` 指定其他字体文件。
+macOS 依次查找 STHeiti Medium、STHeiti Light 与 Arial Unicode；Windows 依次在 `%WINDIR%\Fonts` 查找 Microsoft YaHei、SimHei 与 SimSun。均找不到时必须使用 `--font`。
 
 ## 命令行用法
 
@@ -152,6 +163,9 @@ comictranslate INPUT
   [--qwen-model DIR]
   [--text-mask-model FILE]
   [--lama-model FILE]
+  [--device {auto,cpu,cuda,mps}]
+  [--qwen-service-mode {auto,managed-mlx,external}]
+  [--qwen-model-id MODEL_ID]
   [--server-url URL]
   [--font FILE]
   [--text-placement {bubble,original}]
@@ -166,7 +180,10 @@ comictranslate INPUT
 | `--qwen-model` | Qwen MLX 模型目录的绝对路径。 |
 | `--text-mask-model` | comic-text-detector ONNX 文件的绝对路径。 |
 | `--lama-model` | `big-lama.pt` 文件的绝对路径。 |
-| `--server-url` | OpenAI 兼容的 `mlx_vlm` API 地址；默认 `http://127.0.0.1:8080/v1`。 |
+| `--device` | RT-DETR 与 LaMa 共用的设备；`auto` 依次选择 CUDA、MPS、CPU，显式设备不可用时立即报错。 |
+| `--qwen-service-mode` | `auto`、仅 macOS 可用的 `managed-mlx`，或仅回环地址可用的 `external`。 |
+| `--qwen-model-id` | 外部服务通过 `/v1/models` 公布的模型 ID；`external` 模式必填。 |
+| `--server-url` | OpenAI 兼容 API 的基础地址；默认 `http://127.0.0.1:8080/v1`。 |
 | `--font` | 中文字体文件；默认尝试系统字体。 |
 | `--text-placement` | `bubble` 使用气泡安全区；`original` 使用原文字框。 |
 
@@ -256,6 +273,8 @@ batch = translate_directory("pages", config=config)
 print(batch.succeeded, batch.skipped, batch.failed)
 ```
 
+Windows 下将 `qwen_model` 替换为 `qwen_service_mode="external"`、`qwen_model_id="qwen-vl-local"` 和本机服务 URL。设置 `device="cuda"` 可强制要求 CUDA；保留 `device="auto"` 时，CUDA 不可用会警告并回退 CPU。
+
 `translate_image` 一次处理一张图片并返回 `PipelineResult`。`translate_directory` 返回 `BatchResult`，其中包含成功的 `PipelineResult`、跳过的输入路径和 `BatchFailure` 失败记录。所有公开类型和函数均从 `comictranslate` 包根导出。
 
 ## 调试输出
@@ -310,6 +329,8 @@ uv run pytest
 RUN_MODEL_INTEGRATION=1 uv run pytest tests/test_model_integration.py
 ```
 
+运行对应集成检查前，需要用绝对路径设置 `COMICTRANSLATE_DETECTOR_MODEL`、`COMICTRANSLATE_TEXT_MASK_MODEL` 和 `COMICTRANSLATE_LAMA_MODEL`。
+
 可通过环境变量 `COMICTRANSLATE_REFERENCE_IMAGE` 覆盖集成测试使用的参考图片：
 
 ```bash
@@ -330,8 +351,9 @@ uv build
 
 - 文件夹批处理只扫描第一层，不支持递归子文件夹、PDF/EPUB 或图形界面。
 - 目标语言固定为简体中文。
-- 运行环境固定为 Apple Silicon macOS 和 Python 3.10.18。
-- 模型不会自动下载，且默认模型路径具有开发机特定性。
+- 支持环境为 Apple Silicon macOS 和使用 Python 3.10.18 的 Windows x64。首个 Windows 版本不保证 Windows 10、Windows ARM64、Linux、AMD/Intel GPU、远程服务或带鉴权服务。
+- 模型、字体和 Qwen 服务均不会自动下载或安装。
+- CPU 回退保证功能路径可用，但不承诺模型推理性能可接受。
 - 版面检测、OCR、翻译、擦除和排版质量取决于本地模型与原图质量。
 - 极小或不规则区域可能在最小字号下出现轻微文字越界。
 
@@ -339,15 +361,15 @@ uv build
 
 ### 提示“缺少本地模型”
 
-确认四个路径分别指向两个模型目录和两个模型文件，并使用绝对路径。最常见原因是仍在使用项目内置的开发机默认路径。
+确认 RT-DETR 指向目录，文字 mask 与 LaMa 指向文件。`managed-mlx` 还要求 Qwen 模型目录；`external` 则只要求模型 ID。所有本地模型路径都必须是绝对路径。
 
-### 提示“Apple Metal 环境不可用”
+### Windows 上 CUDA 不可用
 
-确认系统为 Apple Silicon macOS、Python 版本精确为 3.10.18，且当前环境中的 MLX 可以访问 Metal。
+运行前文 PowerShell 验证命令，确认 NVIDIA 驱动为新版本，且 Torch 版本带有 `+cu126`。`--device cuda` 会在 CUDA 不可用时立即失败；`--device auto` 会警告并使用 CPU。
 
-### 提示端口被非 `mlx_vlm` 服务占用
+### Qwen 服务不可用
 
-停止占用对应端口的程序，或通过 `--server-url http://127.0.0.1:其他端口/v1` 选择空闲端口。
+`managed-mlx` 模式下请停止冲突进程或更换端口。`external` 模式下请确认 URL 仅使用回环地址、`GET /v1/models` 含有完全一致的模型 ID，并支持 Data URL 视觉输入及严格 JSON Schema 响应。ComicTranslate 退出后不会关闭外部服务。
 
 ### 带透明通道的图片无法保存为 JPEG
 

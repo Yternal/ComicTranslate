@@ -10,8 +10,9 @@ from .errors import InpaintingError
 
 
 class LamaInpainter:
-    def __init__(self, model_path: Path) -> None:
+    def __init__(self, model_path: Path, *, device: str = "cpu") -> None:
         self.model_path = Path(model_path)
+        self.device = device
         self._model: Any = None
         self._torch: Any = None
         self._device: Any = None
@@ -22,7 +23,7 @@ class LamaInpainter:
         try:
             import torch
 
-            device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+            device = torch.device(self.device)
             model = torch.jit.load(str(self.model_path), map_location=device)
             model.eval()
         except Exception as exc:

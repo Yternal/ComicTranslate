@@ -2,10 +2,10 @@
 
 [English](README.md) | [简体中文](README_zh.md)
 
-ComicTranslate is a local comic translation tool for Apple Silicon Macs. It combines text detection, OCR, Simplified Chinese translation, source-text removal, and translated-text rendering in one pipeline while preserving the input dimensions and transparency whenever possible. It accepts either one image or all supported images directly inside a folder.
+ComicTranslate is a local comic translation tool for Apple Silicon macOS and Windows x64 with NVIDIA GPUs. It combines text detection, OCR, Simplified Chinese translation, source-text removal, and translated-text rendering in one pipeline while preserving the input dimensions and transparency whenever possible. It accepts either one image or all supported images directly inside a folder.
 
 > [!IMPORTANT]
-> This project is in an early stage. The current version supports only Apple Silicon macOS and Python 3.10.18. All models must be downloaded in advance; ComicTranslate never downloads models automatically.
+> This project is in an early stage. The current version supports Apple Silicon macOS and Windows x64, and requires Python 3.10.18 exactly. Models, fonts, and external Qwen services are never downloaded or installed automatically.
 
 ## Table of contents
 
@@ -57,11 +57,11 @@ Vertical text runs from top to bottom inside each column, with columns ordered f
 
 | Item | Requirement |
 | --- | --- |
-| Operating system | Apple Silicon macOS (arm64) |
+| Operating system | Apple Silicon macOS (arm64), or Windows x64 (AMD64) |
 | Python | **3.10.18**, exact version required |
-| Compute backend | Apple Metal / MPS |
+| Compute backend | macOS: MPS; Windows: NVIDIA CUDA 12.6, with CPU fallback in `auto` mode |
 | Package manager | [uv](https://docs.astral.sh/uv/) |
-| Models | RT-DETR, Qwen MLX, comic-text-detector ONNX, and LaMa |
+| Models | RT-DETR, comic-text-detector ONNX, LaMa, plus Qwen MLX on macOS or a local OpenAI-compatible VLM service on Windows |
 | Input formats | `.png`, `.jpg`, `.jpeg`, `.webp` |
 | Output formats | `.png`, `.jpg`, `.jpeg`, `.webp` |
 
@@ -77,9 +77,17 @@ Clone the repository, enter its directory, and install the locked runtime and de
 uv sync --all-groups
 ```
 
-### 2. Prepare the models
+On Windows, the lock file selects official PyTorch CUDA 12.6 wheels. Verify the result in PowerShell:
 
-Download all four models in advance and note their absolute paths. ComicTranslate does not download them for you. See [Model configuration](#model-configuration) for the mapping between models and arguments.
+```powershell
+uv run python -c "import torch; print(torch.__version__); print(torch.cuda.is_available())"
+```
+
+The second line should be `True` on the supported Windows target. A recent NVIDIA driver compatible with the bundled CUDA 12.6 runtime is required.
+
+### 2. Prepare models and Qwen
+
+Download RT-DETR, comic-text-detector ONNX, and LaMa in advance and note their absolute paths. On macOS, also download the Qwen MLX model. On Windows, start a local OpenAI-compatible vision-language-model service and note its model ID. See [Model configuration](#model-configuration) for details.
 
 ### 3. Translate an image
 
@@ -89,6 +97,20 @@ uv run comictranslate page.png \
   --qwen-model /absolute/path/to/qwen-mlx-model \
   --text-mask-model /absolute/path/to/comictextdetector.pt.onnx \
   --lama-model /absolute/path/to/big-lama.pt
+```
+
+Windows PowerShell example:
+
+```powershell
+uv run comictranslate "C:\Comics\page.png" `
+  --output "C:\Comics\output\page.zh-CN.png" `
+  --detector-model "C:\Models\comic-detector" `
+  --text-mask-model "C:\Models\comictextdetector.pt.onnx" `
+  --lama-model "C:\Models\big-lama.pt" `
+  --device cuda `
+  --qwen-service-mode external `
+  --server-url http://127.0.0.1:8000/v1 `
+  --qwen-model-id qwen-vl-local
 ```
 
 Without `--output`, the result is created next to the input as `<original-name>.translated.png`. For example, `page.jpg` produces `page.translated.png`.
@@ -110,21 +132,11 @@ The folder mode scans only the first level and writes results to `./pages/transl
 | Stage | Model in use | Download | CLI argument and path type |
 | --- | --- | --- | --- |
 | Bubble and text detection | `ogkalu/comic-text-and-bubble-detector` | [Hugging Face (pinned revision `16e8a62`)](https://huggingface.co/ogkalu/comic-text-and-bubble-detector/tree/16e8a622f91fabc6b5b65c96d32d1183f8843546) | `--detector-model` (model directory) |
-| OCR and translation | `mlx-community/Qwen3.5-9B-MLX-4bit` | [Hugging Face (pinned revision `938d891`)](https://huggingface.co/mlx-community/Qwen3.5-9B-MLX-4bit/tree/938d8919941c6e7efd3c7150eff7fe9d12afa631) | `--qwen-model` (MLX model directory) |
+| OCR and translation on macOS | `mlx-community/Qwen3.5-9B-MLX-4bit` | [Hugging Face (pinned revision `938d891`)](https://huggingface.co/mlx-community/Qwen3.5-9B-MLX-4bit/tree/938d8919941c6e7efd3c7150eff7fe9d12afa631) | `--qwen-model` (MLX model directory) |
 | Refined text mask | `comictextdetector.pt.onnx` | [Direct GitHub Release download](https://github.com/zyddnys/manga-image-translator/releases/download/beta-0.3/comictextdetector.pt.onnx) | `--text-mask-model` (ONNX file) |
 | Image inpainting | `big-lama.pt` (TorchScript) | [Direct Hugging Face download](https://huggingface.co/okaris/simple-lama/resolve/d5706085cdbdd5eb72503fdcd9fa648e952cfa53/big-lama.pt) | `--lama-model` (model file) |
 
-The development defaults currently hard-coded in the project are:
-
-```text
-/Volumes/yrq/models/
-├── comic-text-and-bubble-detector/
-├── Qwen/Qwen3.5-9B-Official-MLX-4bit/
-├── manga-image-translator/comictextdetector.pt.onnx
-└── lama/big-lama.pt
-```
-
-These defaults are absolute paths from the development machine. Unless your local layout matches exactly, override them with CLI arguments or `PipelineConfig`. All four model paths must be absolute. The CLI expands paths beginning with `~/`.
+There are no built-in model paths. Required model arguments must be absolute. The CLI expands paths beginning with `~/` on macOS and accepts drive-qualified paths such as `C:\Models\big-lama.pt` on Windows.
 
 Downloaded models can be stored anywhere, and local directory names do not need to match the repository names in the table. To verify that the single-file models match the versions tested here, compare their SHA-256 checksums:
 
@@ -133,14 +145,13 @@ comictextdetector.pt.onnx  1a86ace74961413cbd650002e7bb4dcec4980ffa21b2f19b86933
 big-lama.pt                7ba7aa7ac37a4d41fdbbeba3a2af7ead18058552997e3a3cd1a3b2210c9e6b4c
 ```
 
-By default, ComicTranslate checks `http://127.0.0.1:8080/v1`:
+Qwen service mode defaults depend on the platform:
 
-- A healthy existing `mlx_vlm` service is reused and is not stopped on exit.
-- If no service is available, ComicTranslate starts `mlx_vlm.server` with the active Python environment, waits for up to 180 seconds, and stops only the process it created.
-- If another service owns the port, the command fails with an explicit error. Use `--server-url` to select a different address or port.
-- An available remote `mlx_vlm` service can be reused, but ComicTranslate will not start one remotely.
+- `auto` resolves to `managed-mlx` on Apple Silicon macOS. It reuses a healthy `mlx_vlm` service or starts one with `--qwen-model`, and stops only the process it created.
+- `auto` resolves to `external` on Windows. `external` accepts only `localhost`, `127.0.0.1`, or `::1`, calls `GET /v1/models`, and requires `--qwen-model-id` to match an advertised ID. It never starts or stops a process.
+- The external service must implement `POST /v1/chat/completions`, OpenAI-style Data URL image content, and `response_format.type=json_schema`, without authentication. ComicTranslate sends the model ID and omits MLX-only fields.
 
-When no font is specified, ComicTranslate tries the macOS STHeiti Medium, STHeiti Light, and Arial Unicode fonts in that order. Use `--font` to provide another font file.
+On macOS, ComicTranslate tries STHeiti Medium, STHeiti Light, and Arial Unicode. On Windows, it checks `%WINDIR%\Fonts` for Microsoft YaHei, SimHei, and SimSun in that order. Use `--font` when no suitable system font exists.
 
 ## Command-line usage
 
@@ -152,6 +163,9 @@ comictranslate INPUT
   [--qwen-model DIR]
   [--text-mask-model FILE]
   [--lama-model FILE]
+  [--device {auto,cpu,cuda,mps}]
+  [--qwen-service-mode {auto,managed-mlx,external}]
+  [--qwen-model-id MODEL_ID]
   [--server-url URL]
   [--font FILE]
   [--text-placement {bubble,original}]
@@ -166,7 +180,10 @@ comictranslate INPUT
 | `--qwen-model` | Absolute path to the Qwen MLX model directory. |
 | `--text-mask-model` | Absolute path to the comic-text-detector ONNX file. |
 | `--lama-model` | Absolute path to the `big-lama.pt` file. |
-| `--server-url` | OpenAI-compatible `mlx_vlm` API URL; defaults to `http://127.0.0.1:8080/v1`. |
+| `--device` | Shared RT-DETR/LaMa device. `auto` chooses CUDA, then MPS, then CPU. An unavailable explicit device is an error. |
+| `--qwen-service-mode` | `auto`, macOS-only `managed-mlx`, or loopback-only `external`. |
+| `--qwen-model-id` | Model ID advertised by an external service; required in `external` mode. |
+| `--server-url` | OpenAI-compatible API base URL; defaults to `http://127.0.0.1:8080/v1`. |
 | `--font` | Chinese font file; system fonts are tried by default. |
 | `--text-placement` | `bubble` uses the bubble safe area; `original` uses the original text box. |
 
@@ -256,6 +273,8 @@ batch = translate_directory("pages", config=config)
 print(batch.succeeded, batch.skipped, batch.failed)
 ```
 
+On Windows, replace `qwen_model` with `qwen_service_mode="external"`, `qwen_model_id="qwen-vl-local"`, and the local service URL. Set `device="cuda"` to require CUDA, or leave `device="auto"` to warn and fall back to CPU when CUDA is unavailable.
+
 `translate_image` processes one image and returns a `PipelineResult`. `translate_directory` returns a `BatchResult` containing successful `PipelineResult` objects, skipped input paths, and `BatchFailure` records. All public API types and functions are exported from the `comictranslate` package root.
 
 ## Debug output
@@ -310,6 +329,8 @@ Run the RT-DETR, ONNX, and LaMa integration tests with local model files:
 RUN_MODEL_INTEGRATION=1 uv run pytest tests/test_model_integration.py
 ```
 
+Set `COMICTRANSLATE_DETECTOR_MODEL`, `COMICTRANSLATE_TEXT_MASK_MODEL`, and `COMICTRANSLATE_LAMA_MODEL` to absolute paths before running the corresponding integration checks.
+
 Override the reference image used by the integration tests with `COMICTRANSLATE_REFERENCE_IMAGE`:
 
 ```bash
@@ -330,8 +351,9 @@ Real-model integration tests are skipped by default. A unit-test-only run must n
 
 - Folder batches scan one level only; recursive folders, PDF/EPUB input, and a GUI are not supported.
 - The target language is fixed to Simplified Chinese.
-- The runtime is restricted to Apple Silicon macOS and Python 3.10.18.
-- Models are never downloaded automatically, and the built-in model paths are development-machine specific.
+- Supported runtimes are Apple Silicon macOS and Windows x64 with Python 3.10.18. Windows 10, Windows ARM64, Linux, AMD/Intel GPUs, remote services, and authenticated services are not supported in the first Windows release.
+- Models, fonts, and Qwen services are never downloaded or installed automatically.
+- CPU fallback preserves the functional path but is not expected to provide practical model-inference performance.
 - Detection, OCR, translation, removal, and layout quality depend on the local models and source image.
 - Very small or irregular regions may show slight text overflow at the minimum font size.
 
@@ -339,15 +361,15 @@ Real-model integration tests are skipped by default. A unit-test-only run must n
 
 ### “Missing local models”
 
-Confirm that the four paths point to two model directories and two model files, all with absolute paths. The most common cause is unintentionally using the development-machine defaults.
+Confirm that RT-DETR points to a directory and the text-mask and LaMa paths point to files. `managed-mlx` additionally requires a Qwen model directory; `external` requires a model ID instead. All local model paths must be absolute.
 
-### “Apple Metal environment unavailable”
+### CUDA is unavailable on Windows
 
-Confirm that the machine is an Apple Silicon Mac, Python is exactly 3.10.18, and MLX can access Metal in the active environment.
+Run the PowerShell verification command above. Confirm that the NVIDIA driver is current and that `uv.lock` installed a `+cu126` Torch build. `--device cuda` fails immediately when CUDA is unavailable; `--device auto` warns and uses CPU.
 
-### The port is occupied by a non-`mlx_vlm` service
+### The Qwen service cannot be used
 
-Stop the process using that port, or pass `--server-url http://127.0.0.1:ANOTHER_PORT/v1` with an available port.
+For `managed-mlx`, stop the conflicting process or choose another port. For `external`, confirm the URL is loopback-only, `GET /v1/models` contains the exact configured model ID, and the server supports Data URL vision input plus strict JSON Schema responses. ComicTranslate does not stop an external service when it exits.
 
 ### An image with transparency cannot be saved as JPEG
 

@@ -8,12 +8,9 @@ from pathlib import Path
 from loguru import logger
 
 from .config import (
-    DEFAULT_DETECTOR_MODEL,
-    DEFAULT_LAMA_MODEL,
-    DEFAULT_QWEN_MODEL,
     DEFAULT_SERVER_URL,
-    DEFAULT_TEXT_MASK_MODEL,
     PipelineConfig,
+    is_absolute_path,
 )
 from .errors import ComicTranslateError
 from .io_utils import default_output_path
@@ -22,7 +19,7 @@ from .pipeline import translate_directory, translate_image
 
 def absolute_path(value: str) -> Path:
     path = Path(value).expanduser()
-    if not path.is_absolute():
+    if not is_absolute_path(value):
         raise argparse.ArgumentTypeError(f"必须使用绝对路径: {value}")
     return path
 
@@ -41,28 +38,40 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--detector-model",
         type=absolute_path,
-        default=DEFAULT_DETECTOR_MODEL,
         help="RT-DETR 模型目录绝对路径",
     )
     parser.add_argument(
         "--qwen-model",
         type=absolute_path,
-        default=DEFAULT_QWEN_MODEL,
         help="Qwen MLX 模型目录绝对路径",
     )
     parser.add_argument(
         "--text-mask-model",
         type=absolute_path,
-        default=DEFAULT_TEXT_MASK_MODEL,
         help="comic-text-detector ONNX 文件绝对路径",
     )
     parser.add_argument(
         "--lama-model",
         type=absolute_path,
-        default=DEFAULT_LAMA_MODEL,
         help="big-lama.pt 文件绝对路径",
     )
     parser.add_argument("--server-url", default=DEFAULT_SERVER_URL)
+    parser.add_argument(
+        "--device",
+        choices=("auto", "cpu", "cuda", "mps"),
+        default="auto",
+        help="RT-DETR 与 LaMa 使用的计算设备",
+    )
+    parser.add_argument(
+        "--qwen-service-mode",
+        choices=("auto", "managed-mlx", "external"),
+        default="auto",
+        help="自动管理 MLX 服务，或连接外部本机服务",
+    )
+    parser.add_argument(
+        "--qwen-model-id",
+        help="external 模式在 /v1/models 中公布的模型 ID",
+    )
     parser.add_argument("--font", type=Path)
     parser.add_argument(
         "--text-placement",
@@ -82,6 +91,9 @@ def main(argv: list[str] | None = None) -> int:
             text_mask_model=args.text_mask_model,
             lama_model=args.lama_model,
             server_url=args.server_url,
+            device=args.device,
+            qwen_service_mode=args.qwen_service_mode,
+            qwen_model_id=args.qwen_model_id,
             font_path=args.font,
             debug_dir=args.debug_dir,
             text_placement=args.text_placement,

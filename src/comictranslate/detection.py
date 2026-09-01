@@ -58,9 +58,12 @@ def _patch_rtdetr_v2_mps(torch: Any) -> None:
 
 
 class RTDetrDetector:
-    def __init__(self, model_path: Path, threshold: float = 0.3) -> None:
+    def __init__(
+        self, model_path: Path, threshold: float = 0.3, *, device: str = "cpu"
+    ) -> None:
         self.model_path = Path(model_path)
         self.threshold = threshold
+        self.device = device
         self._processor: Any = None
         self._model: Any = None
         self._device: Any = None
@@ -72,11 +75,9 @@ class RTDetrDetector:
             import torch
             from transformers import RTDetrImageProcessor, RTDetrV2ForObjectDetection
 
-            if torch.backends.mps.is_available():
+            device = torch.device(self.device)
+            if device.type == "mps":
                 _patch_rtdetr_v2_mps(torch)
-                device = torch.device("mps")
-            else:
-                device = torch.device("cpu")
             processor = RTDetrImageProcessor.from_pretrained(
                 self.model_path, local_files_only=True
             )

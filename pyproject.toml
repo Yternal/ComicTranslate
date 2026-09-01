@@ -1,7 +1,7 @@
 [project]
 name = "comictranslate"
 version = "0.1.0"
-description = "Local end-to-end comic image translation for Apple Silicon"
+description = "Local end-to-end comic image translation for macOS and Windows"
 readme = "README.md"
 requires-python = "==3.10.18"
 dependencies = [
@@ -14,6 +14,19 @@ dependencies = [
     "torchvision==0.28.0",
     "transformers==5.15.1",
 ]
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cu126", marker = "sys_platform == 'win32'" },
+]
+torchvision = [
+    { index = "pytorch-cu126", marker = "sys_platform == 'win32'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
 
 [project.scripts]
 comictranslate = "comictranslate.cli:main"

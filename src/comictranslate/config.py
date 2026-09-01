@@ -2,18 +2,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from pathlib import PureWindowsPath
 from typing import Literal
 
 
 DEFAULT_SERVER_URL = "http://127.0.0.1:8080/v1"
-DEFAULT_DETECTOR_MODEL = Path("/Volumes/yrq/models/comic-text-and-bubble-detector")
-DEFAULT_QWEN_MODEL = Path(
-    "/Volumes/yrq/models/Qwen/Qwen3.5-9B-Official-MLX-4bit"
-)
-DEFAULT_TEXT_MASK_MODEL = Path(
-    "/Volumes/yrq/models/manga-image-translator/comictextdetector.pt.onnx"
-)
-DEFAULT_LAMA_MODEL = Path("/Volumes/yrq/models/lama/big-lama.pt")
+DEFAULT_DETECTOR_MODEL: Path | None = None
+DEFAULT_QWEN_MODEL: Path | None = None
+DEFAULT_TEXT_MASK_MODEL: Path | None = None
+DEFAULT_LAMA_MODEL: Path | None = None
+
+
+def is_absolute_path(value: str | Path) -> bool:
+    text = str(value)
+    return Path(text).expanduser().is_absolute() or PureWindowsPath(text).is_absolute()
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,10 +30,13 @@ class PipelineConfig:
     minimum_font_size: int = 10
     maximum_font_size: int = 160
     text_placement: Literal["bubble", "original"] = "bubble"
-    detector_model: Path = DEFAULT_DETECTOR_MODEL
-    qwen_model: Path = DEFAULT_QWEN_MODEL
-    text_mask_model: Path = DEFAULT_TEXT_MASK_MODEL
-    lama_model: Path = DEFAULT_LAMA_MODEL
+    device: Literal["auto", "cpu", "cuda", "mps"] = "auto"
+    qwen_service_mode: Literal["auto", "managed-mlx", "external"] = "auto"
+    qwen_model_id: str | None = None
+    detector_model: Path | None = DEFAULT_DETECTOR_MODEL
+    qwen_model: Path | None = DEFAULT_QWEN_MODEL
+    text_mask_model: Path | None = DEFAULT_TEXT_MASK_MODEL
+    lama_model: Path | None = DEFAULT_LAMA_MODEL
 
     def __post_init__(self) -> None:
         for field_name in (
@@ -41,8 +46,10 @@ class PipelineConfig:
             "lama_model",
         ):
             value = getattr(self, field_name)
+            if value is None:
+                continue
             path = Path(value).expanduser()
-            if not path.is_absolute():
+            if not is_absolute_path(value):
                 raise ValueError(f"{field_name} 必须是绝对路径")
             object.__setattr__(self, field_name, path)
         if self.font_path is not None:
@@ -59,3 +66,14 @@ class PipelineConfig:
             raise ValueError("字体大小范围无效")
         if self.text_placement not in {"bubble", "original"}:
             raise ValueError("text_placement 必须是 bubble 或 original")
+        if self.device not in {"auto", "cpu", "cuda", "mps"}:
+            raise ValueError("device 必须是 auto、cpu、cuda 或 mps")
+        if self.qwen_service_mode not in {"auto", "managed-mlx", "external"}:
+            raise ValueError(
+                "qwen_service_mode 必须是 auto、managed-mlx 或 external"
+            )
+        if self.qwen_model_id is not None:
+            model_id = self.qwen_model_id.strip()
+            if not model_id:
+                raise ValueError("qwen_model_id 不能为空")
+            object.__setattr__(self, "qwen_model_id", model_id)
