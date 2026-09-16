@@ -87,7 +87,7 @@ uv run python -c "import torch; print(torch.__version__); print(torch.cuda.is_av
 
 ### 2. 准备模型与 Qwen
 
-提前下载 RT-DETR、comic-text-detector ONNX 与 LaMa，并记录绝对路径。macOS 还需下载 Qwen MLX 模型；Windows 则需先启动本机 OpenAI 兼容视觉语言模型服务，并记录它公布的模型 ID。具体契约见[模型配置](#模型配置)。
+提前下载 RT-DETR、comic-text-detector ONNX 与 LaMa，并记录绝对路径。macOS 还需下载 Qwen MLX 模型；Windows 可按下文准备 GGUF、视觉投影和 llama 服务程序，或启动外部本机 OpenAI 兼容视觉语言模型服务，并记录它公布的模型 ID。具体契约见[模型配置](#模型配置)。
 
 ### 3. 翻译图片
 
@@ -148,7 +148,7 @@ big-lama.pt                7ba7aa7ac37a4d41fdbbeba3a2af7ead18058552997e3a3cd1a3b
 Qwen 服务模式按平台确定默认值：
 
 - Apple Silicon macOS 上，`auto` 等同 `managed-mlx`：复用健康的 `mlx_vlm`，或使用 `--qwen-model` 自动启动服务；退出时只关闭本次创建的进程。
-- Windows 上，`auto` 等同 `external`：仅接受 `localhost`、`127.0.0.1` 或 `::1`，通过 `GET /v1/models` 验证 `--qwen-model-id`。程序不会启动或终止外部服务。
+- Windows 上，`auto` 在提供模型或服务程序路径时选择 `managed-llama`；仅提供模型 ID 时选择 `external`；均未提供则报错。`external`：仅接受 `localhost`、`127.0.0.1` 或 `::1`，通过 `GET /v1/models` 验证 `--qwen-model-id`。程序不会启动或终止外部服务。
 - 外部服务必须无鉴权实现 `POST /v1/chat/completions`、OpenAI 风格的 Data URL 图片输入和 `response_format.type=json_schema`。请求使用模型 ID，不包含 MLX 专有字段。
 
 macOS 依次查找 STHeiti Medium、STHeiti Light 与 Arial Unicode；Windows 依次在 `%WINDIR%\Fonts` 查找 Microsoft YaHei、SimHei 与 SimSun。均找不到时必须使用 `--font`。
@@ -164,7 +164,7 @@ comictranslate INPUT
   [--text-mask-model FILE]
   [--lama-model FILE]
   [--device {auto,cpu,cuda,mps}]
-  [--qwen-service-mode {auto,managed-mlx,external}]
+  [--qwen-service-mode {auto,managed-mlx,managed-llama,external}]
   [--qwen-model-id MODEL_ID]
   [--server-url URL]
   [--font FILE]
@@ -181,8 +181,10 @@ comictranslate INPUT
 | `--text-mask-model` | comic-text-detector ONNX 文件的绝对路径。 |
 | `--lama-model` | `big-lama.pt` 文件的绝对路径。 |
 | `--device` | RT-DETR 与 LaMa 共用的设备；`auto` 依次选择 CUDA、MPS、CPU，显式设备不可用时立即报错。 |
-| `--qwen-service-mode` | `auto`、仅 macOS 可用的 `managed-mlx`，或仅回环地址可用的 `external`。 |
-| `--qwen-model-id` | 外部服务通过 `/v1/models` 公布的模型 ID；`external` 模式必填。 |
+| `--qwen-service-mode` | `auto`、仅 macOS 可用的 `managed-mlx`、本机托管 `managed-llama`，或仅回环地址可用的 `external`。 |
+| `--qwen-model-id` | 外部模型 ID（必填），或托管 llama 的可选模型别名。 |
+| `--qwen-server-executable` / `--qwen-mmproj` | llama-server 与配套视觉投影的绝对路径。 |
+| `--qwen-context-size` / `--qwen-gpu-layers` | 上下文大小（默认 32768）与 GPU 层数（`auto` 或非负整数）。 |
 | `--server-url` | OpenAI 兼容 API 的基础地址；默认 `http://127.0.0.1:8080/v1`。 |
 | `--font` | 中文字体文件；默认尝试系统字体。 |
 | `--text-placement` | `bubble` 使用气泡安全区；`original` 使用原文字框。 |
@@ -351,7 +353,7 @@ uv build
 
 - 文件夹批处理只扫描第一层，不支持递归子文件夹、PDF/EPUB 或图形界面。
 - 目标语言固定为简体中文。
-- 支持环境为 Apple Silicon macOS 和使用 Python 3.10.18 的 Windows x64。首个 Windows 版本不保证 Windows 10、Windows ARM64、Linux、AMD/Intel GPU、远程服务或带鉴权服务。
+- 支持环境为 Apple Silicon macOS 和使用 Python 3.10.18 的 Windows x64。Windows 10 22H2 与 Windows 11 x64 为实现目标，尚待实机验收；Windows ARM64、Linux、AMD/Intel GPU、远程服务或带鉴权服务不在范围内。
 - 模型、字体和 Qwen 服务均不会自动下载或安装。
 - CPU 回退保证功能路径可用，但不承诺模型推理性能可接受。
 - 版面检测、OCR、翻译、擦除和排版质量取决于本地模型与原图质量。
@@ -395,3 +397,20 @@ JPEG 不支持 alpha 通道。将输出扩展名改为 `.png` 或 `.webp`。
 项目包含经裁剪和修改的 [`dmMaze/comic-text-detector`](https://github.com/dmMaze/comic-text-detector) 纯推理 mask refinement 代码。其固定提交、修改范围和许可信息见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)，GPL-3.0 许可全文见 [LICENSES/comic-text-detector-GPL-3.0.txt](LICENSES/comic-text-detector-GPL-3.0.txt)。
 
 分发包含该代码的组合程序时，需要遵守 GPL-3.0 的相应要求。模型文件不随本仓库分发，其许可由各模型提供方单独规定。
+
+## Windows 托管 Qwen（待实机验收）
+
+提前准备 llama.cpp **b10981** 的 `llama-server.exe` 及 DLL、Qwen3.5-9B Q4_K_M GGUF 和配套视觉投影文件。程序不自动下载。llama 运行时的 CUDA 构建需独立匹配显卡驱动。
+
+默认 `uv sync --all-groups` 使用 CUDA 12.6；RTX 50 系列验收使用 CUDA 13，后续 uv 命令也需保留选择，或使用 `--no-sync`：
+
+```powershell
+uv sync --locked --no-group cuda126 --extra cuda13
+uv run --no-sync comictranslate C:\Comics\page.png -o C:\Comics\translated.png --device cuda --detector-model C:\Models\detector --text-mask-model C:\Models\text.onnx --lama-model C:\Models\big-lama.pt --qwen-model C:\Models\Qwen3.5-9B-Q4_K_M.gguf --qwen-server-executable C:\llama\llama-server.exe --qwen-mmproj C:\Models\mmproj.gguf
+```
+
+`--qwen-context-size` 默认 32768；`--qwen-gpu-layers` 默认 `auto`，允许非负整数；模型 ID 默认取 GGUF 文件名去除扩展名，也可通过 `--qwen-model-id` 指定。单图与整个批次共享服务创建逻辑，只关闭自建进程，启动中取消也会清理。启动日志保留在 stderr 公布的路径。
+
+服务复用检查后端、模型 ID、GGUF 路径、视觉能力和上下文大小。上游接口不公布投影文件名，配套 mmproj 的来源仍需操作者核对。CUDA 校验执行真实矩阵运算；显式 CUDA 失败报错，`auto` 失败警告并回退 CPU，但不保证后续模型显存足够。显存不足可降低 GPU 层数或上下文；上下文溢出需增加上下文。程序不静默删除图片或放宽响应规则。
+
+[实机验收清单](docs/windows-acceptance.md) 记录 Windows 10/11、RTX 20/30/40/50 和真实模型发布门槛。CI 和本机 HTTP 测试不代表已经完成硬件功能对齐。

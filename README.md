@@ -87,7 +87,7 @@ The second line should be `True` on the supported Windows target. A recent NVIDI
 
 ### 2. Prepare models and Qwen
 
-Download RT-DETR, comic-text-detector ONNX, and LaMa in advance and note their absolute paths. On macOS, also download the Qwen MLX model. On Windows, start a local OpenAI-compatible vision-language-model service and note its model ID. See [Model configuration](#model-configuration) for details.
+Download RT-DETR, comic-text-detector ONNX, and LaMa in advance and note their absolute paths. On macOS, also download the Qwen MLX model. On Windows, prepare the GGUF, projector and llama executable described below, or start an external local OpenAI-compatible vision-language-model service and note its model ID. See [Model configuration](#model-configuration) for details.
 
 ### 3. Translate an image
 
@@ -148,7 +148,7 @@ big-lama.pt                7ba7aa7ac37a4d41fdbbeba3a2af7ead18058552997e3a3cd1a3b
 Qwen service mode defaults depend on the platform:
 
 - `auto` resolves to `managed-mlx` on Apple Silicon macOS. It reuses a healthy `mlx_vlm` service or starts one with `--qwen-model`, and stops only the process it created.
-- `auto` resolves to `external` on Windows. `external` accepts only `localhost`, `127.0.0.1`, or `::1`, calls `GET /v1/models`, and requires `--qwen-model-id` to match an advertised ID. It never starts or stops a process.
+- On Windows, `auto` selects `managed-llama` when a model or executable path is provided; model-ID-only configuration selects `external`. Missing both is an error. `external` accepts only `localhost`, `127.0.0.1`, or `::1`, calls `GET /v1/models`, and requires `--qwen-model-id` to match an advertised ID. It never starts or stops a process.
 - The external service must implement `POST /v1/chat/completions`, OpenAI-style Data URL image content, and `response_format.type=json_schema`, without authentication. ComicTranslate sends the model ID and omits MLX-only fields.
 
 On macOS, ComicTranslate tries STHeiti Medium, STHeiti Light, and Arial Unicode. On Windows, it checks `%WINDIR%\Fonts` for Microsoft YaHei, SimHei, and SimSun in that order. Use `--font` when no suitable system font exists.
@@ -164,7 +164,7 @@ comictranslate INPUT
   [--text-mask-model FILE]
   [--lama-model FILE]
   [--device {auto,cpu,cuda,mps}]
-  [--qwen-service-mode {auto,managed-mlx,external}]
+  [--qwen-service-mode {auto,managed-mlx,managed-llama,external}]
   [--qwen-model-id MODEL_ID]
   [--server-url URL]
   [--font FILE]
@@ -181,8 +181,10 @@ comictranslate INPUT
 | `--text-mask-model` | Absolute path to the comic-text-detector ONNX file. |
 | `--lama-model` | Absolute path to the `big-lama.pt` file. |
 | `--device` | Shared RT-DETR/LaMa device. `auto` chooses CUDA, then MPS, then CPU. An unavailable explicit device is an error. |
-| `--qwen-service-mode` | `auto`, macOS-only `managed-mlx`, or loopback-only `external`. |
-| `--qwen-model-id` | Model ID advertised by an external service; required in `external` mode. |
+| `--qwen-service-mode` | `auto`, macOS-only `managed-mlx`, local `managed-llama`, or loopback-only `external`. |
+| `--qwen-model-id` | Required external model ID, or optional managed llama alias. |
+| `--qwen-server-executable` / `--qwen-mmproj` | Absolute paths to llama-server and its matching vision projector. |
+| `--qwen-context-size` / `--qwen-gpu-layers` | Context tokens (32768) and GPU layers (`auto` or nonnegative integer). |
 | `--server-url` | OpenAI-compatible API base URL; defaults to `http://127.0.0.1:8080/v1`. |
 | `--font` | Chinese font file; system fonts are tried by default. |
 | `--text-placement` | `bubble` uses the bubble safe area; `original` uses the original text box. |
@@ -351,7 +353,7 @@ Real-model integration tests are skipped by default. A unit-test-only run must n
 
 - Folder batches scan one level only; recursive folders, PDF/EPUB input, and a GUI are not supported.
 - The target language is fixed to Simplified Chinese.
-- Supported runtimes are Apple Silicon macOS and Windows x64 with Python 3.10.18. Windows 10, Windows ARM64, Linux, AMD/Intel GPUs, remote services, and authenticated services are not supported in the first Windows release.
+- Supported runtimes are Apple Silicon macOS and Windows x64 with Python 3.10.18. Windows 10 22H2 and Windows 11 x64 are implementation targets pending hardware acceptance. Windows ARM64, Linux, AMD/Intel GPUs, remote services, and authenticated services remain outside scope.
 - Models, fonts, and Qwen services are never downloaded or installed automatically.
 - CPU fallback preserves the functional path but is not expected to provide practical model-inference performance.
 - Detection, OCR, translation, removal, and layout quality depend on the local models and source image.
@@ -395,3 +397,20 @@ For rendering or pipeline-output changes, include before-and-after images in the
 This project contains a trimmed and modified inference-only mask-refinement adaptation of [`dmMaze/comic-text-detector`](https://github.com/dmMaze/comic-text-detector). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the pinned commit, modifications, and licensing information, and [LICENSES/comic-text-detector-GPL-3.0.txt](LICENSES/comic-text-detector-GPL-3.0.txt) for the full GPL-3.0 text.
 
 Distribution of a combined work containing that code must comply with the applicable GPL-3.0 requirements. Model files are not distributed with this repository and remain subject to their providers' separate license terms.
+
+## Managed Windows Qwen (hardware acceptance pending)
+
+Prepare llama.cpp **b10981** (`llama-server.exe` and its DLLs), Qwen3.5-9B Q4_K_M GGUF and the matching vision projector. Nothing is downloaded automatically. The runtime CUDA build must match your driver independently of the PyTorch wheel.
+
+Default `uv sync --all-groups` uses CUDA 12.6. For RTX 50 validation, select CUDA 13 explicitly and retain these flags on subsequent uv commands:
+
+```powershell
+uv sync --locked --no-group cuda126 --extra cuda13
+uv run --no-sync comictranslate C:\Comics\page.png -o C:\Comics\translated.png --device cuda --detector-model C:\Models\detector --text-mask-model C:\Models\text.onnx --lama-model C:\Models\big-lama.pt --qwen-model C:\Models\Qwen3.5-9B-Q4_K_M.gguf --qwen-server-executable C:\llama\llama-server.exe --qwen-mmproj C:\Models\mmproj.gguf
+```
+
+`--qwen-context-size` defaults to 32768; `--qwen-gpu-layers` accepts `auto` (default) or a nonnegative integer. `--qwen-model-id` optionally overrides the GGUF filename stem. Both single-image and batch runs manage one service and close only their own process, including cancellation during startup. Startup logs are retained at the path printed to stderr. Reuse checks backend, advertised ID, GGUF path, vision support and context size; the server does not expose the projector filename, so matching projector provenance still requires operator verification.
+
+CUDA selection now executes an actual matrix operation. An explicit CUDA failure stops processing; `auto` warns and falls back to CPU. This does not guarantee sufficient VRAM for later model inference. Reduce GPU layers/context for memory errors; increase context for context overflow. No images or response constraints are silently removed.
+
+See [acceptance checklist](docs/windows-acceptance.md) for remaining Windows 10/11, RTX 20/30/40/50 and real-model release gates. CI and local HTTP tests do not establish hardware parity.
