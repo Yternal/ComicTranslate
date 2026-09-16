@@ -20,6 +20,8 @@ def local_config(tmp_path: Path) -> PipelineConfig:
     mask_path.touch()
     lama_path.touch()
     return PipelineConfig(
+        qwen_service_mode="external",
+        qwen_model_id="test-qwen",
         detector_model=models / "comic-text-and-bubble-detector",
         qwen_model=models / "Qwen" / "Qwen3.5-9B-Official-MLX-4bit",
         text_mask_model=mask_path,

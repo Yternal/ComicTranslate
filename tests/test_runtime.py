@@ -12,9 +12,21 @@ from comictranslate.validation import (
 )
 
 
+class Probe:
+    def __matmul__(self, other):
+        return self
+
+    def sum(self):
+        return self
+
+    def item(self):
+        return 8
+
+
 def _torch(*, cuda: bool, mps: bool):  # type: ignore[no-untyped-def]
     return SimpleNamespace(
-        cuda=SimpleNamespace(is_available=lambda: cuda),
+        cuda=SimpleNamespace(is_available=lambda: cuda, synchronize=lambda: None),
+        ones=lambda *a, **k: Probe(),
         backends=SimpleNamespace(
             mps=SimpleNamespace(is_available=lambda: mps),
         ),
@@ -69,7 +81,7 @@ def test_qwen_auto_mode_depends_on_platform() -> None:
         == "managed-mlx"
     )
     assert (
-        resolve_qwen_service_mode("auto", system="Windows", machine="AMD64")
+        resolve_qwen_service_mode("auto", system="Windows", machine="AMD64", model_id="qwen")
         == "external"
     )
 

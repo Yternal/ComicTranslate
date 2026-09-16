@@ -85,6 +85,8 @@ def test_mock_pipeline_preserves_dimensions_alpha_and_writes_debug(
     config = type(local_config)(
         detector_model=local_config.detector_model,
         qwen_model=local_config.qwen_model,
+        qwen_service_mode="external",
+        qwen_model_id="test-qwen",
         text_mask_model=local_config.text_mask_model,
         lama_model=local_config.lama_model,
         font_path=local_config.font_path,
@@ -239,6 +241,8 @@ def test_pipeline_reuses_stage_dependencies_and_isolates_batch_debug(
     config = type(local_config)(
         detector_model=local_config.detector_model,
         qwen_model=local_config.qwen_model,
+        qwen_service_mode="external",
+        qwen_model_id="test-qwen",
         text_mask_model=local_config.text_mask_model,
         lama_model=local_config.lama_model,
         font_path=local_config.font_path,

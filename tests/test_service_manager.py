@@ -49,6 +49,7 @@ class FakeResponse:
 def test_reuses_existing_mlx_service_without_owning_it(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     manager = QwenServiceManager("http://127.0.0.1:8080/v1", "/model")
     monkeypatch.setattr(manager, "_probe", lambda: "mlx")
+    monkeypatch.setattr(manager, "_external_model_ids", lambda: {str(manager.model_path)})
     manager.ensure_ready()
     assert not manager.owned
     manager.close()
@@ -61,6 +62,7 @@ def test_starts_and_only_closes_owned_service(monkeypatch) -> None:  # type: ign
     monkeypatch.setattr(manager, "_probe", lambda: next(states))
     monkeypatch.setattr(manager, "_port_is_open", lambda: False)
     monkeypatch.setattr(manager, "_start_process", lambda: process)
+    monkeypatch.setattr(manager, "_external_model_ids", lambda: {str(manager.model_path)})
     manager.ensure_ready()
     assert manager.owned
     manager.close()

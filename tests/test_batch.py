@@ -122,6 +122,12 @@ def test_translate_directory_continues_after_failure_and_reuses_session(
         def prepare(self) -> None:
             self.prepared += 1
 
+        def _translator(self):
+            return FakeTranslator()
+
+        def _service_manager(self):
+            return FakeServiceManager()
+
         def run(
             self, input_path: Path, output_path: Path, *, debug_name: str | None = None
         ) -> PipelineResult:

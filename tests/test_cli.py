@@ -41,35 +41,35 @@ def test_pipeline_config_translates_one_roi_per_request_by_default() -> None:
     assert PipelineConfig().translation_batch_size == 1
 
 
-def test_cli_accepts_independent_model_paths() -> None:
+def test_cli_accepts_independent_model_paths(tmp_path) -> None:
     args = build_parser().parse_args(
         [
             "page.png",
             "--detector-model",
-            "/models/detector",
+            str(tmp_path / "detector"),
             "--qwen-model",
-            "/models/qwen",
+            str(tmp_path / "qwen"),
             "--text-mask-model",
-            "/models/text-mask.onnx",
+            str(tmp_path / "text-mask.onnx"),
             "--lama-model",
-            "/models/big-lama.pt",
+            str(tmp_path / "big-lama.pt"),
         ]
     )
-    assert args.detector_model == Path("/models/detector")
-    assert args.qwen_model == Path("/models/qwen")
-    assert args.text_mask_model == Path("/models/text-mask.onnx")
-    assert args.lama_model == Path("/models/big-lama.pt")
+    assert args.detector_model == (tmp_path / "detector")
+    assert args.qwen_model == (tmp_path / "qwen")
+    assert args.text_mask_model == (tmp_path / "text-mask.onnx")
+    assert args.lama_model == (tmp_path / "big-lama.pt")
 
 
-def test_independent_model_paths_override_only_their_defaults() -> None:
+def test_independent_model_paths_override_only_their_defaults(tmp_path) -> None:
     config = PipelineConfig(
-        detector_model="/custom/detector",
-        lama_model="/custom/lama.pt",
+        detector_model=str(tmp_path / "detector"),
+        lama_model=str(tmp_path / "lama.pt"),
     )
-    assert config.detector_model == Path("/custom/detector")
+    assert config.detector_model == (tmp_path / "detector")
     assert config.qwen_model == DEFAULT_QWEN_MODEL
     assert config.text_mask_model == DEFAULT_TEXT_MASK_MODEL
-    assert config.lama_model == Path("/custom/lama.pt")
+    assert config.lama_model == (tmp_path / "lama.pt")
 
 
 def test_cli_rejects_relative_independent_model_path() -> None:
