@@ -24,7 +24,7 @@ class ComicTextMasker:
         if self._network is not None:
             return
         try:
-            network = cv2.dnn.readNetFromONNX(str(self.model_path))
+            network = cv2.dnn.readNetFromONNX(np.frombuffer(self.model_path.read_bytes(), dtype=np.uint8))
             output_names = tuple(network.getUnconnectedOutLayersNames())
         except Exception as exc:
             raise MaskError(f"无法加载文字 mask ONNX 模型 {self.model_path}: {exc}") from exc

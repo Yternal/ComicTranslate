@@ -7,6 +7,7 @@ import math
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -82,17 +83,28 @@ class QwenServiceManager:
         server_url: str,
         model_path: Path | None,
         *,
-        mode: Literal["managed-mlx", "external"] = "managed-mlx",
+        mode: Literal["managed-mlx", "managed-llama", "external"] = "managed-mlx",
         model_id: str | None = None,
         start_timeout: float = 180.0,
         python_executable: str | None = None,
+        server_executable: Path | None = None,
+        mmproj: Path | None = None,
+        context_size: int = 32768,
+        gpu_layers: str = "auto",
         clock: Callable[[], float] = time.monotonic,
         sleeper: Callable[[float], None] = time.sleep,
     ) -> None:
         self.server_url = server_url.rstrip("/")
         self.model_path = Path(model_path) if model_path is not None else None
         self.mode = mode
-        self.model_id = model_id
+        self.model_id = model_id or (
+            self.model_path.stem if mode == "managed-llama" and self.model_path else None
+        )
+        self.server_executable = server_executable
+        self.mmproj = mmproj
+        self.context_size = context_size
+        self.gpu_layers = gpu_layers
+        self.log_path: Path | None = None
         self.start_timeout = start_timeout
         self.python_executable = python_executable or sys.executable
         self._clock = clock
@@ -108,7 +120,7 @@ class QwenServiceManager:
     def health_url(self) -> str:
         return f"{_root_url(self.server_url)}/health"
 
-    def _probe(self) -> Literal["mlx", "other", "unreachable"]:
+    def _probe(self) -> Literal["mlx", "llama", "other", "unreachable"]:
         request = urllib.request.Request(
             self.health_url,
             headers={"Accept": "application/json", "User-Agent": "comictranslate/0.1"},
@@ -129,7 +141,42 @@ class QwenServiceManager:
                 or "continuous_batching_enabled" in payload
             )
         )
-        return "mlx" if is_mlx else "other"
+        if is_mlx:
+            return "mlx"
+        if isinstance(payload, dict) and payload.get("status") == "ok":
+            try:
+                props = self._properties()
+                if "build_info" in props and "model_path" in props:
+                    return "llama"
+            except TranslationError:
+                pass
+        return "other"
+
+    def _properties(self) -> dict[str, Any]:
+        request = urllib.request.Request(f"{_root_url(self.server_url)}/props")
+        try:
+            with _open(request, timeout=5.0) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("props 不是对象")
+            return payload
+        except (OSError, ValueError) as exc:
+            raise TranslationError(f"无法确认 llama 服务配置: {exc}") from exc
+
+    def _verify_managed_model(self) -> None:
+        expected = (self.model_id or str(self.model_path)) if self.mode == "managed-llama" else str(self.model_path)
+        if expected not in self._external_model_ids():
+            raise TranslationError(f"Qwen 服务模型不匹配，要求 {expected}")
+        if self.mode == "managed-llama":
+            props = self._properties()
+            path = props.get("model_path")
+            if not isinstance(path, str) or Path(path).resolve() != self.model_path.resolve():
+                raise TranslationError("llama 服务 GGUF 路径与配置不匹配")
+            if not props.get("modalities", {}).get("vision"):
+                raise TranslationError("llama 服务未启用视觉投影 mmproj")
+            actual_context = props.get("default_generation_settings", {}).get("n_ctx")
+            if actual_context != self.context_size:
+                raise TranslationError("llama 服务上下文大小与 qwen_context_size 不匹配")
 
     def _address(self) -> tuple[str, int]:
         parsed = urlsplit(self.server_url)
@@ -189,17 +236,40 @@ class QwenServiceManager:
             "--port",
             str(port),
         ]
+        if self.mode == "managed-llama":
+            if self.server_executable is None or self.mmproj is None:
+                raise TranslationError("managed-llama 缺少服务程序或 mmproj")
+            command = [
+                str(self.server_executable), "--model", str(self.model_path),
+                "--mmproj", str(self.mmproj), "--alias", str(self.model_id),
+                "--ctx-size", str(self.context_size), "--n-gpu-layers", self.gpu_layers,
+                "--host", host, "--port", str(port), "--parallel", "1",
+                "--jinja", "--chat-template-kwargs", '{"enable_thinking":false}',
+            ]
         try:
-            return subprocess.Popen(
-                command,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
+            with tempfile.NamedTemporaryFile(prefix="comictranslate-qwen-", suffix=".log", delete=False) as log:
+                self.log_path = Path(log.name)
+                logger.info("Qwen 服务日志：{}", self.log_path)
+                return subprocess.Popen(
+                    command,
+                    shell=False,
+                    stdin=subprocess.DEVNULL,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                )
         except OSError as exc:
-            raise TranslationError(f"无法启动 mlx_vlm.server: {exc}") from exc
+            raise TranslationError(f"无法启动 Qwen 服务，日志 {self.log_path}: {exc}") from exc
 
     def ensure_ready(self) -> None:
+        try:
+            self._ensure_ready()
+        except BaseException:
+            self.close()
+            if self.log_path:
+                logger.error("Qwen 启动失败，保留日志：{}", self.log_path)
+            raise
+
+    def _ensure_ready(self) -> None:
         logger.info("检查 Qwen 服务：{}", self.server_url)
         if self.mode == "external":
             host, _ = self._address()
@@ -215,17 +285,22 @@ class QwenServiceManager:
                 )
             logger.info("外部 Qwen 服务与模型已就绪：{}", self.model_id)
             return
+        host, _ = self._address()
+        if host not in {"127.0.0.1", "localhost", "::1"}:
+            raise TranslationError("托管 Qwen 服务只允许本机回环地址")
+        expected_backend = "llama" if self.mode == "managed-llama" else "mlx"
         state = self._probe()
-        if state == "mlx":
+        if state == expected_backend:
+            self._verify_managed_model()
             logger.info("复用已就绪的 Qwen 服务")
             return
-        if state == "other" or self._port_is_open():
+        if state != "unreachable" or self._port_is_open():
             _, port = self._address()
-            raise TranslationError(f"端口 {port} 已被非 mlx_vlm 服务占用")
+            raise TranslationError(f"端口 {port} 已被非 mlx_vlm 或不匹配的 Qwen 服务占用")
 
         logger.info("Qwen 服务未运行，正在自动启动：{}", self.model_path)
         if self.model_path is None:
-            raise TranslationError("managed-mlx 模式缺少本地 Qwen 模型目录")
+            raise TranslationError("托管模式缺少本地 Qwen 模型路径")
         self._process = self._start_process()
         self._owned = True
         deadline = self._clock() + self.start_timeout
@@ -233,19 +308,20 @@ class QwenServiceManager:
             if self._process.poll() is not None:
                 code = self._process.returncode
                 self.close()
-                raise TranslationError(f"mlx_vlm.server 在就绪前退出，退出码 {code}")
+                raise TranslationError(f"Qwen 服务在就绪前退出，退出码 {code}")
             state = self._probe()
-            if state == "mlx":
+            if state == expected_backend:
+                self._verify_managed_model()
                 logger.success("Qwen 服务已就绪")
                 return
-            if state == "other":
+            if state != "unreachable":
                 self.close()
                 raise TranslationError("Qwen 启动期间端口被其他服务占用")
             self._sleep(1.0)
 
         self.close()
         raise TranslationError(
-            f"mlx_vlm.server 在 {self.start_timeout:g} 秒内未就绪"
+            f"Qwen 服务在 {self.start_timeout:g} 秒内未就绪"
         )
 
     def close(self) -> None:
@@ -370,7 +446,7 @@ class QwenTranslator:
         server_url: str,
         model: str | Path,
         *,
-        service_mode: Literal["managed-mlx", "external"] = "managed-mlx",
+        service_mode: Literal["managed-mlx", "managed-llama", "external"] = "managed-mlx",
         batch_size: int = 1,
         request_timeout: float = 600.0,
     ) -> None:
@@ -401,6 +477,12 @@ class QwenTranslator:
             if not isinstance(content, str) or not content.strip():
                 raise ValueError("响应 content 为空")
             return content.strip()
+        except urllib.error.HTTPError as exc:
+            detail = exc.read(8192).decode("utf-8", errors="replace")
+            raise TranslationError(
+                f"Qwen HTTP {exc.code}: {detail}；上下文不足请增加 --qwen-context-size；"
+                "显存不足请降低 --qwen-gpu-layers 或上下文大小"
+            ) from exc
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             raise TranslationError(f"Qwen 请求失败: {exc}") from exc
         except (json.JSONDecodeError, KeyError, IndexError, TypeError, ValueError) as exc:
@@ -454,6 +536,8 @@ class QwenTranslator:
         }
         if self.service_mode == "managed-mlx":
             payload["enable_thinking"] = False
+        elif self.service_mode == "managed-llama":
+            payload["chat_template_kwargs"] = {"enable_thinking": False}
         return self._post(payload)
 
     def translate(self, page_image: Image.Image, regions: Sequence[Region]) -> list[Translation]:

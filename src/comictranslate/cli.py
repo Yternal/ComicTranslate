@@ -43,7 +43,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--qwen-model",
         type=absolute_path,
-        help="Qwen MLX 模型目录绝对路径",
+        help="Qwen MLX 模型目录或 GGUF 文件绝对路径",
     )
     parser.add_argument(
         "--text-mask-model",
@@ -64,14 +64,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--qwen-service-mode",
-        choices=("auto", "managed-mlx", "external"),
+        choices=("auto", "managed-mlx", "managed-llama", "external"),
         default="auto",
-        help="自动管理 MLX 服务，或连接外部本机服务",
+        help="自动管理 MLX / llama 服务，或连接外部本机服务",
     )
     parser.add_argument(
         "--qwen-model-id",
-        help="external 模式在 /v1/models 中公布的模型 ID",
+        help="external 模型 ID，或托管 llama 的可选模型别名",
     )
+    parser.add_argument("--qwen-server-executable", type=absolute_path)
+    parser.add_argument("--qwen-mmproj", type=absolute_path)
+    parser.add_argument("--qwen-context-size", type=int, default=32768)
+    parser.add_argument("--qwen-gpu-layers", default="auto")
     parser.add_argument("--font", type=Path)
     parser.add_argument(
         "--text-placement",
@@ -83,6 +87,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     args = build_parser().parse_args(argv)
     try:
         config = PipelineConfig(
@@ -94,6 +100,10 @@ def main(argv: list[str] | None = None) -> int:
             device=args.device,
             qwen_service_mode=args.qwen_service_mode,
             qwen_model_id=args.qwen_model_id,
+            qwen_server_executable=args.qwen_server_executable,
+            qwen_mmproj=args.qwen_mmproj,
+            qwen_context_size=args.qwen_context_size,
+            qwen_gpu_layers=args.qwen_gpu_layers,
             font_path=args.font,
             debug_dir=args.debug_dir,
             text_placement=args.text_placement,

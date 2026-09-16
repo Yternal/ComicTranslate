@@ -71,7 +71,12 @@ class Pipeline:
         if self._prepared:
             return
         self.environment_check()
-        service_mode = resolve_qwen_service_mode(self.config.qwen_service_mode)
+        service_mode = resolve_qwen_service_mode(
+            self.config.qwen_service_mode,
+            model_path=self.config.qwen_model,
+            server_executable=self.config.qwen_server_executable,
+            model_id=self.config.qwen_model_id,
+        )
         device = self.device_resolver(self.config.device)
         font_path = validate_models_and_font(self.config, service_mode)
         self._font_path = font_path
@@ -80,6 +85,9 @@ class Pipeline:
         self._prepared = True
 
     def _resolved_qwen_model(self) -> str | Path:
+        if self._qwen_service_mode == "managed-llama":
+            assert self.config.qwen_model is not None
+            return self.config.qwen_model_id or self.config.qwen_model.stem
         if self._qwen_service_mode == "external":
             if self.config.qwen_model_id is None:
                 raise RuntimeError("管线尚未完成 Qwen 外部模型初始化")
@@ -97,6 +105,10 @@ class Pipeline:
             mode=self._qwen_service_mode,
             model_id=self.config.qwen_model_id,
             start_timeout=self.config.server_start_timeout,
+            server_executable=self.config.qwen_server_executable,
+            mmproj=self.config.qwen_mmproj,
+            context_size=self.config.qwen_context_size,
+            gpu_layers=self.config.qwen_gpu_layers,
         )
 
     def _translator(self) -> QwenTranslator:
@@ -398,31 +410,12 @@ def translate_directory(
             f"无法创建批量输出文件夹 {resolved_output_dir}: {exc}"
         ) from exc
 
-    service_mode = resolve_qwen_service_mode(batch_config.qwen_service_mode)
-    qwen_model: str | Path | None = (
-        batch_config.qwen_model_id
-        if service_mode == "external"
-        else batch_config.qwen_model
-    )
-    if qwen_model is None:
-        qwen_model = ""
-    translator = QwenTranslator(
-        batch_config.server_url,
-        qwen_model,
-        service_mode=service_mode,
-        batch_size=batch_config.translation_batch_size,
-    )
-    pipeline = Pipeline(batch_config, translator=translator)
+    pipeline = Pipeline(batch_config)
     pipeline.prepare()
+    pipeline.translator = pipeline._translator()
     results: list[PipelineResult] = []
     failures: list[BatchFailure] = []
-    with QwenServiceManager(
-        batch_config.server_url,
-        batch_config.qwen_model,
-        mode=service_mode,
-        model_id=batch_config.qwen_model_id,
-        start_timeout=batch_config.server_start_timeout,
-    ):
+    with pipeline._service_manager():
         for index, (input_path, output_path) in enumerate(pending_jobs, start=1):
             logger.info(
                 "批量进度 [{}/{}]：{}", index, len(pending_jobs), input_path.name

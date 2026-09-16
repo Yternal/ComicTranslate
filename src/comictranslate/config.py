@@ -31,7 +31,11 @@ class PipelineConfig:
     maximum_font_size: int = 160
     text_placement: Literal["bubble", "original"] = "bubble"
     device: Literal["auto", "cpu", "cuda", "mps"] = "auto"
-    qwen_service_mode: Literal["auto", "managed-mlx", "external"] = "auto"
+    qwen_service_mode: Literal["auto", "managed-mlx", "managed-llama", "external"] = "auto"
+    qwen_server_executable: Path | None = None
+    qwen_mmproj: Path | None = None
+    qwen_context_size: int = 32768
+    qwen_gpu_layers: str = "auto"
     qwen_model_id: str | None = None
     detector_model: Path | None = DEFAULT_DETECTOR_MODEL
     qwen_model: Path | None = DEFAULT_QWEN_MODEL
@@ -42,6 +46,8 @@ class PipelineConfig:
         for field_name in (
             "detector_model",
             "qwen_model",
+            "qwen_server_executable",
+            "qwen_mmproj",
             "text_mask_model",
             "lama_model",
         ):
@@ -68,10 +74,16 @@ class PipelineConfig:
             raise ValueError("text_placement 必须是 bubble 或 original")
         if self.device not in {"auto", "cpu", "cuda", "mps"}:
             raise ValueError("device 必须是 auto、cpu、cuda 或 mps")
-        if self.qwen_service_mode not in {"auto", "managed-mlx", "external"}:
+        if self.qwen_service_mode not in {"auto", "managed-mlx", "managed-llama", "external"}:
             raise ValueError(
-                "qwen_service_mode 必须是 auto、managed-mlx 或 external"
+                "qwen_service_mode 必须是 auto、managed-mlx、managed-llama 或 external"
             )
+        if self.qwen_context_size < 1:
+            raise ValueError("qwen_context_size 必须为正整数")
+        layers = str(self.qwen_gpu_layers)
+        if layers != "auto" and not (layers.isascii() and layers.isdecimal()):
+            raise ValueError("qwen_gpu_layers 必须是 auto 或非负整数")
+        object.__setattr__(self, "qwen_gpu_layers", layers)
         if self.qwen_model_id is not None:
             model_id = self.qwen_model_id.strip()
             if not model_id:

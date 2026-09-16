@@ -13,7 +13,7 @@ from .rendering import resolve_font_path
 
 
 ResolvedDevice = Literal["cpu", "cuda", "mps"]
-ResolvedQwenServiceMode = Literal["managed-mlx", "external"]
+ResolvedQwenServiceMode = Literal["managed-mlx", "managed-llama", "external"]
 
 
 def ensure_supported_runtime(
@@ -39,17 +39,24 @@ def ensure_supported_runtime(
 
 
 def resolve_qwen_service_mode(
-    requested: Literal["auto", "managed-mlx", "external"],
+    requested: Literal["auto", "managed-mlx", "managed-llama", "external"],
     *,
     system: str | None = None,
     machine: str | None = None,
+    model_path: Path | None = None,
+    server_executable: Path | None = None,
+    model_id: str | None = None,
 ) -> ResolvedQwenServiceMode:
     actual_system = system or platform.system()
     actual_machine = machine or platform.machine()
     if requested == "auto":
         if actual_system == "Darwin" and actual_machine == "arm64":
             return "managed-mlx"
-        return "external"
+        if model_path is not None or server_executable is not None:
+            return "managed-llama"
+        if model_id:
+            return "external"
+        raise ConfigurationError("请配置 Qwen GGUF、qwen_server_executable 和 qwen_mmproj，或外部服务模型 ID")
     if requested == "managed-mlx" and not (
         actual_system == "Darwin" and actual_machine == "arm64"
     ):
@@ -69,9 +76,27 @@ def resolve_device(
     except Exception as exc:
         raise ConfigurationError(f"无法检查 PyTorch 计算设备: {exc}") from exc
 
-    cuda_available = bool(torch.cuda.is_available())
+    if requested == "cpu":
+        return "cpu"
+    try:
+        cuda_available = bool(torch.cuda.is_available())
+    except Exception as exc:
+        if requested == "auto":
+            logger.warning("CUDA 初始化失败，自动回退 CPU：{}", exc)
+            return "cpu"
+        raise ConfigurationError(f"CUDA 初始化失败: {exc}") from exc
     mps_backend = getattr(getattr(torch, "backends", None), "mps", None)
     mps_available = bool(mps_backend and mps_backend.is_available())
+    if cuda_available and requested in {"auto", "cuda"}:
+        try:
+            probe = torch.ones((2, 2), device="cuda")
+            (probe @ probe).sum().item()
+            torch.cuda.synchronize()
+        except Exception as exc:
+            if requested == "cuda":
+                raise ConfigurationError(f"CUDA 实际运算失败，请检查驱动和 PyTorch CUDA 构建: {exc}") from exc
+            logger.warning("CUDA 实际运算失败，自动回退 CPU：{}", exc)
+            return "cpu"
     if requested == "auto":
         if cuda_available:
             return "cuda"
@@ -96,6 +121,12 @@ def validate_models_and_font(
     ]
     if qwen_service_mode == "managed-mlx":
         required.append(("Qwen MLX", config.qwen_model, True))
+    elif qwen_service_mode == "managed-llama":
+        required.extend([
+            ("Qwen GGUF", config.qwen_model, False),
+            ("llama-server", config.qwen_server_executable, False),
+            ("Qwen mmproj", config.qwen_mmproj, False),
+        ])
     elif not config.qwen_model_id:
         raise ConfigurationError("external Qwen 模式必须配置 qwen_model_id")
     missing = []
